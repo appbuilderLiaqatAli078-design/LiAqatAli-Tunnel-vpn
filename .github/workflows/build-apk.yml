@@ -39,14 +39,25 @@ jobs:
             exit 1
           fi
 
+      - name: Accept Android SDK licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+
+      - name: Ensure environment file exists
+        run: |
+          touch .env
+
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Create temporary debug keystore
+      - name: Setup debug keystore
         run: |
-          if [ ! -f "./debug.keystore" ]; then
+          if [ -f "./debug.keystore.base64" ]; then
+            echo "Restoring debug.keystore from debug.keystore.base64..."
+            base64 -d ./debug.keystore.base64 > ./debug.keystore
+          elif [ ! -f "./debug.keystore" ]; then
             echo "Generating temporary debug keystore..."
             keytool -genkeypair \
               -keystore ./debug.keystore \
@@ -58,10 +69,10 @@ jobs:
               -keysize 2048 \
               -validity 10000
           else
-            echo "debug.keystore already exists."
+            echo "debug.keystore already present."
           fi
           if [ ! -f "./debug.keystore" ]; then
-            echo "ERROR: Failed to create ./debug.keystore"
+            echo "ERROR: Failed to create or restore ./debug.keystore"
             exit 1
           fi
 
@@ -123,20 +134,18 @@ jobs:
 
           TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
           TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
-          NOTES=$(cat <<EOF
-          This is an automatically generated debug APK.
-          The APK was built by GitHub Actions.
-          - GitHub Actions Run Number: ${GITHUB_RUN_NUMBER}
-          - GitHub Actions Run Attempt: ${GITHUB_RUN_ATTEMPT}
-          - Source Commit SHA: ${GITHUB_SHA}
-          - Note: This APK is intended for testing and is not a Play Store production release.
-          - Note: This APK is signed only with a temporary debug keystore.
-          EOF
-          )
+
+          # Write release notes safely using printf (avoids heredoc EOF indentation syntax error)
+          printf "%s\n" \
+            "### AegisTunnel VPN Debug Build" \
+            "This is an automatically generated debug APK built by GitHub Actions." \
+            "- Verified dual architecture: **arm64-v8a** (64-bit) & **armeabi-v7a** (32-bit)" \
+            "- Note: This APK is intended for testing and is not a Play Store production release." \
+            "- Note: This APK is signed with a temporary debug keystore." > release_notes.md
 
           gh release create "$TAG" "$ASSET_PATH#$ASSET_NAME" \
             --title "$TITLE" \
-            --notes "$NOTES" \
+            --notes-file release_notes.md \
             --target "$GITHUB_SHA" \
             --latest
 
