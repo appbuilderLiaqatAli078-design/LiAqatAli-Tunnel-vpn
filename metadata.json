@@ -1,0 +1,6 @@
+{
+  "name": "AegisTunnel VPN",
+  "description": "Professional multi-engine Android VPN supporting Xray/V2Ray, SSH dynamic tunneling, and HEV SOCKS5 TUN routing with 32-bit and 64-bit ARM architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

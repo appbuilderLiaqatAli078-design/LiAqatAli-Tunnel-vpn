@@ -1,0 +1,312 @@
+PRO VPN — COMPLETE ANDROID PRD
+Version: 2.0
+Focus: HTTP Custom / DarkTunnel-inspired capabilities, original branding, 32-bit + 64-bit Android support
+
+1. PROJECT OVERVIEW
+Build a reliable Android VPN/tunneling application with a simple mode for beginners and an advanced Pro mode. The app may support imported V2Ray/Xray configurations, managed server profiles, and SSH-based connections through separate, well-defined engine adapters. Create an original product identity and UI; do not copy another app's name, logos, proprietary assets, or exact screen design.
+
+Primary goals:
+- Support 64-bit ARM Android devices (arm64-v8a).
+- Support 32-bit ARM Android devices (armeabi-v7a).
+- Use maintained, compatible tunnel engines rather than inventing a VPN protocol.
+- Make connect/disconnect, import, diagnostics, and error messages clear.
+- Protect credentials and avoid exposing configuration secrets in logs.
+- Work reliably on low-memory Android phones.
+
+2. REQUIRED ABI / ARCHITECTURE SUPPORT
+Required Android ABIs:
+- arm64-v8a: primary and fully tested target.
+- armeabi-v7a: required 32-bit ARM target.
+Optional, only if every native dependency supports it:
+- x86
+- x86_64
+
+Build requirements:
+- Set Android NDK ABI filters to include arm64-v8a and armeabi-v7a.
+- Package the matching native .so libraries for each ABI under:
+  app/src/main/jniLibs/arm64-v8a/
+  app/src/main/jniLibs/armeabi-v7a/
+- If using AAR dependencies, inspect the AAR and verify it contains native libraries for both required ABIs. Do not assume an AAR supports both just because the app declares both.
+- If a dependency lacks a prebuilt library for one ABI, build that dependency for the missing ABI using its documented build process or choose a compatible alternative.
+- Never package a 64-bit .so in the 32-bit directory or vice versa.
+- Add CI/build checks that inspect APK/AAB contents and fail if either required ABI is missing.
+- Build and test debug and release variants for both ABIs. Confirm Play/App Bundle delivery does not accidentally exclude armeabi-v7a.
+- Keep native library versions pinned and record source URL, version/tag, commit, license, checksum, and build instructions.
+- Use arm64-v8a as the main development target; run a separate 32-bit smoke-test device/emulator where available.
+
+3. RECOMMENDED ENGINE ARCHITECTURE
+Android UI and service:
+- Kotlin
+- Jetpack Compose
+- Android VpnService
+- Coroutines and Flow
+- Room for local profile metadata (never store secrets unencrypted)
+- DataStore for non-sensitive settings
+- Android Keystore-backed encryption for sensitive local values where appropriate
+
+Proxy/tunnel engine:
+- Xray-core / compatible Android libXray AAR for supported proxy protocols and Xray configurations.
+- hev-socks5-tunnel for forwarding Android TUN traffic to a local/remote SOCKS5 endpoint.
+- SSH support as a separate adapter using a maintained SSH library or a carefully audited implementation.
+- Keep a clear adapter boundary so each engine can be replaced without rewriting the UI.
+
+Important integration distinction:
+- hev-socks5-tunnel is a TUN-to-SOCKS5 forwarding component; it is not itself an Xray protocol implementation and does not create an SSH server or SSH account.
+- Xray handles supported proxy protocols and configurations.
+- SSH is a separate connection mode. If SSH mode needs full-device VPN routing, implement and test the required local SOCKS/TUN routing chain. Do not claim UDP support for an SSH mode unless the chosen SSH transport and implementation really support it.
+- Avoid running multiple VPN engines against the same TUN file descriptor unless the routing design explicitly requires it and is tested.
+
+Reference projects:
+- hev-socks5-tunnel: https://github.com/heiher/hev-socks5-tunnel
+- Xray-core: https://github.com/XTLS/Xray-core
+- Android Xray integration / AAR: verify the selected maintained libXray distribution and its supported ABIs before adopting.
+- Inspect all dependency licenses and notices before release.
+
+4. PRODUCT MODES
+A. Simple mode
+- Clean home screen with one primary Connect button.
+- Import a supported config from file, clipboard, or QR code.
+- Show imported profile name, server location if known, protocol, and connection state.
+- Clearly explain invalid/unsupported configurations.
+- Allow users to select a profile and connect/disconnect.
+- No fake servers, fabricated ping values, or simulated connected states.
+
+B. Pro mode
+- Profile manager and multiple connection types.
+- Import/export supported configurations.
+- Server list with real status/latency only when actually measured.
+- Optional per-app routing, if implemented through VpnService and tested.
+- DNS configuration and IPv4/IPv6 handling controls with safe defaults.
+- Connection logs with secrets redacted.
+- Diagnostics screen with engine status, ABI, app version, and non-sensitive error codes.
+- Advanced options must have descriptions and safe defaults.
+
+5. CORE SCREENS
+1. Onboarding and privacy explanation.
+2. Home: Connect/Disconnect, selected profile, live state, session duration and traffic counters when available.
+3. Profiles: add, import, edit, duplicate, delete, reorder.
+4. Import: file picker, clipboard, QR scan; validate before saving.
+5. Server list: configured servers only; show verified metadata.
+6. Connection details: engine, protocol, route mode, DNS state, uptime, bytes in/out.
+7. Settings: theme, auto-connect, DNS, split tunneling, notifications, diagnostics.
+8. Logs and troubleshooting: redacted errors, copy diagnostics, clear logs.
+9. About, open-source notices, privacy policy, support contact.
+10. Optional account/subscription screens only if a real backend and payment model are approved.
+
+6. CONNECTION STATE MACHINE
+Implement explicit states:
+- Disconnected
+- Validating
+- RequestingVpnPermission
+- StartingEngine
+- Connecting
+- Connected
+- Reconnecting
+- Stopping
+- Error
+
+Requirements:
+- Do not show Connected until the engine reports success and traffic routing is initialized.
+- Disable duplicate connect/disconnect actions while transitions are in progress.
+- Every startup failure must clean up file descriptors, sockets, coroutines, native processes, and foreground notifications.
+- Disconnect must be idempotent.
+- Handle Android process recreation, service restart, network changes, airplane mode, Wi-Fi/mobile handover, and permission revocation.
+- Keep the VPN foreground service notification accurate and provide a visible disconnect action.
+- Avoid indefinite reconnect loops; use bounded exponential backoff and allow manual cancellation.
+
+7. ANDROID VPN SERVICE
+- Use Android VpnService and request the system VPN permission transparently.
+- Create the TUN interface with explicit IPv4/IPv6 and DNS routes appropriate to the chosen engine.
+- Protect the upstream tunnel socket from being routed back into the VPN using VpnService.protect() where required.
+- Prevent routing loops.
+- Handle DNS carefully; document whether DNS is routed through the tunnel.
+- Define IPv6 behavior: tunnel IPv6 if supported, otherwise block or handle it deliberately to prevent leaks. Never silently leak traffic outside the tunnel.
+- Ensure app shutdown closes the TUN descriptor and stops all native components.
+- Implement always-on VPN and lockdown compatibility only if fully tested.
+- Do not bypass carrier billing, access controls, or network restrictions. Use only servers and configurations the user is authorized to use.
+
+8. Xray / V2Ray INTEGRATION
+- Use a maintained Android-compatible Xray engine/AAR.
+- Verify exact supported protocol/config formats from the selected engine version.
+- Validate config before connection and show useful errors without exposing credentials.
+- Pass configuration through a safe file or API; set restrictive file permissions and remove temporary secrets after use.
+- Support profile import only for formats explicitly implemented and tested.
+- Never pretend a protocol is supported merely because a config parser accepts it.
+- Add tests for valid configs, invalid JSON, missing fields, unsupported protocol, malformed URI, bad port, and authentication errors.
+- Pin the engine version and record ABI coverage.
+
+9. HEV SOCKS5 TUNNEL INTEGRATION
+- Use the upstream project or a reviewed, maintained Android AAR.
+- Verify the chosen release includes arm64-v8a and armeabi-v7a native binaries.
+- Check the AAR's classes and JNI contract against its exact version; do not copy method names from a different release without verification.
+- Start the TUN-to-SOCKS5 forwarder only after the SOCKS5 endpoint is ready.
+- Stop the forwarder before closing resources it depends on.
+- Handle start/stop failure and native crashes defensively.
+- Test TCP, UDP, DNS, IPv4, IPv6, packet loss, reconnects, and long sessions.
+- Keep native configuration files private and redact proxy credentials from logs.
+- Tune memory buffers for low-memory devices without sacrificing correctness.
+
+10. SSH TUNNEL INTEGRATION
+- Treat SSH as a separate engine adapter.
+- Use a maintained library with compatible license and security posture.
+- Verify host keys; do not silently accept any host key.
+- Store credentials securely and never log passwords, private keys, tokens, or full secret configs.
+- Set connection, authentication, keepalive, and idle timeouts.
+- Implement disconnect and reconnection cleanup.
+- Clearly document the capabilities and limitations of the SSH mode, especially UDP and DNS routing.
+- Do not advertise full-device UDP tunneling unless it is implemented and verified end-to-end.
+
+11. BACKEND AND SERVER MANAGEMENT (OPTIONAL)
+If the app uses managed servers, build a small authenticated backend:
+- GET /v1/servers — return approved server metadata.
+- POST /v1/session — authorize a session and return a short-lived connection configuration.
+- POST /v1/heartbeat — optional session health update.
+- DELETE /v1/session/{id} — revoke/end a session.
+- GET /v1/status — health status without secrets.
+
+Security:
+- Never embed administrator credentials or private server keys in the APK.
+- Use HTTPS with proper certificate validation.
+- Apply rate limits, request validation, session expiry, abuse controls, and server-side authorization.
+- Do not trust client-provided subscription status.
+- Do not expose internal server addresses or secrets in public endpoints.
+- Keep a documented retention policy and collect only necessary telemetry.
+- If there is no backend, the app must still support user-imported configurations without pretending a managed server exists.
+
+12. SECURITY AND PRIVACY
+- No hard-coded API keys or universal VPN credentials.
+- No secret values in crash reports, analytics, notifications, or logs.
+- Encrypt sensitive local values where appropriate and use Android Keystore.
+- Provide clear privacy disclosure and explain what metadata, if any, is collected.
+- Do not sell or share browsing activity.
+- No hidden traffic interception, certificate bypass, or deceptive permissions.
+- Verify TLS certificates normally.
+- Apply least privilege and remove unused permissions.
+- Provide a user-accessible option to clear local profiles/logs.
+- Include dependency license notices and an SBOM for release builds.
+
+13. PERFORMANCE AND LOW-MEMORY REQUIREMENTS
+- Avoid unnecessary background polling and wake locks.
+- Use bounded buffers and avoid copying large packet buffers unnecessarily.
+- Keep UI responsive during connect/disconnect and imports.
+- Use lifecycle-aware coroutines.
+- Handle Android battery optimization and background execution restrictions transparently.
+- Test long-running sessions and repeated connect/disconnect cycles.
+- Monitor native memory and file descriptor leaks.
+- Provide meaningful failure messages instead of crashing or redirecting the user to a browser.
+- Do not promise a speed increase; performance depends on server, route, network, and protocol.
+
+14. ABI-SPECIFIC TEST MATRIX
+Required test matrix:
+A. arm64-v8a
+- Install debug APK.
+- Import a valid profile.
+- Connect and verify actual traffic.
+- Test TCP, UDP where supported, DNS, IPv4, IPv6 policy, reconnect, disconnect.
+- Run a long session and repeated connect/disconnect loops.
+- Verify no native crashes or resource leaks.
+
+B. armeabi-v7a
+- Install a 32-bit build on compatible ARM hardware/emulator.
+- Confirm every required native library loads.
+- Repeat profile import, connect, traffic, DNS, disconnect, and reconnect tests.
+- Confirm no UnsatisfiedLinkError, missing .so, ABI mismatch, or native crash.
+- Record memory use and stability separately from 64-bit results.
+
+C. Package verification
+- Inspect APK/AAB contents for lib/arm64-v8a/ and lib/armeabi-v7a/.
+- Fail CI if either required ABI or any required native library is absent.
+- Check that release minification does not remove JNI classes/methods.
+- Test the final signed release artifact, not just debug.
+- If Play App Bundle is used, verify device-specific split APKs for both ABI classes.
+
+15. BUILD CONFIGURATION GUIDANCE
+Illustrative Gradle configuration; adapt to the project's existing plugin/DSL and dependency versions:
+
+android {
+    defaultConfig {
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+}
+
+Do not paste this blindly into a project using a different Gradle DSL. Inspect existing files first and preserve compatible configuration. If the project uses CMake or ndk-build, build each native dependency for both ABIs and package the matching outputs.
+
+16. ERROR HANDLING
+Provide clear errors for:
+- VPN permission denied
+- Unsupported or invalid config
+- Missing ABI/native library
+- Native engine failed to start
+- Authentication failed
+- Server unreachable / timeout
+- DNS resolution failure
+- Unsupported protocol
+- Server rejected session
+- Network changed
+- Unexpected engine exit
+
+Logs must contain timestamps and non-sensitive diagnostic codes, not credentials or full configuration strings.
+
+17. TESTS
+Unit tests:
+- Config parser and validator
+- Profile storage and migration
+- Connection state transitions
+- Error mapping
+- Credential redaction
+- Retry/backoff policy
+- Server response validation
+
+Integration tests:
+- VpnService permission flow
+- Xray engine start/stop
+- HEV forwarder start/stop
+- SSH authentication and host-key verification
+- TUN routing and upstream socket protection
+- DNS and IPv6 leak checks
+- Network handover and reconnect
+- Both ABIs
+- App process/service recreation
+
+18. DELIVERY PHASES
+Phase 1: Inspect repository, Gradle, minSdk/targetSdk, current VPN service, and dependencies. Do not rewrite the app before auditing it.
+Phase 2: Establish a compiling baseline and ABI verification.
+Phase 3: Integrate Xray engine and validate one supported configuration end-to-end.
+Phase 4: Integrate HEV TUN-to-SOCKS5 forwarding and test packet routing.
+Phase 5: Add SSH adapter with documented protocol limitations.
+Phase 6: Build the beginner UI and profile import/export.
+Phase 7: Add Pro features, diagnostics, DNS/IPv6 protections, and optional backend.
+Phase 8: Run the full ABI, security, stability, and release test matrix.
+Phase 9: Produce signed APK/AAB, source/license notices, changelog, and reproducible build notes.
+
+19. ACCEPTANCE CRITERIA
+The release is not complete until:
+- Both arm64-v8a and armeabi-v7a builds install on compatible devices.
+- All required native dependencies are present for both ABIs.
+- A real authorized configuration connects and routes traffic through the expected tunnel.
+- UI never reports false Connected status.
+- Disconnect stops all engines and releases TUN/resources.
+- DNS/IPv6 behavior is tested and documented with no unintended leaks.
+- Invalid configurations fail safely with useful errors.
+- Secrets are redacted from logs and stored securely.
+- Long sessions and repeated connect/disconnect cycles are stable.
+- Debug and signed release artifacts are tested.
+- All third-party licenses and notices are included.
+- No placeholder server, fake latency, or simulated traffic is presented as real.
+
+20. INSTRUCTIONS FOR THE AI CODING AGENT
+First inspect the existing repository and report its current architecture, Gradle version, minSdk/targetSdk, VPN implementation, and native libraries. Then create a short implementation plan. Make focused changes, preserve working features, and do not delete or rewrite unrelated code.
+
+Before adding any library:
+1. Confirm the official repository and exact release/tag.
+2. Confirm the license and required notices.
+3. Confirm arm64-v8a and armeabi-v7a support for the exact artifact.
+4. Verify JNI/API compatibility and Android minimum SDK.
+5. Pin the version and checksum.
+6. Add build-time checks for both ABIs.
+
+Implement incrementally. After each phase, build and run tests. If a library cannot support both required ABIs, do not silently drop 32-bit support: build it for armeabi-v7a or propose a compatible replacement and explain the trade-off. Do not fabricate successful test results. Report completed changes, files changed, commands run, test results, remaining limitations, and how to build the APK.
+
+END OF PRD
