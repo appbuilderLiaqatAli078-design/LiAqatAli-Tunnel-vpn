@@ -319,12 +319,178 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun testWebSocketAcceptHeaderComputation() {
+        // RFC 6455 Section 1.3 standard test vector
+        val key = "dGhlIHNhbXBsZSBub25jZQ=="
+        val accept = com.example.vpn.engine.ssh.SshWebSocketHandler.computeAcceptKey(key)
+        assertEquals("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", accept)
+    }
+
+    @Test
+    fun testWebSocketBinaryFramingExtendedLengthsAndPingPong() {
+        // Test client-to-server masking across small (<126), 16-bit (1024), and 64-bit (70000) payloads
+        for (size in listOf(42, 1024, 70_000)) {
+            val rawOut = java.io.ByteArrayOutputStream()
+            val wsOut = com.example.vpn.engine.ssh.WebSocketFramedOutputStream(rawOut)
+            val original = ByteArray(size) { (it * 31 + 7).toByte() }
+            wsOut.write(original)
+
+            val framed = rawOut.toByteArray()
+            assertEquals(0x82, framed[0].toInt() and 0xFF) // FIN=1, Binary opcode=2
+            val b1 = framed[1].toInt() and 0xFF
+            assertTrue("Client frames must set MASK bit (0x80)", (b1 and 0x80) != 0)
+
+            // Feed the masked frame into WebSocketFramedInputStream and verify exact decoded bytes
+            val replyOut = java.io.ByteArrayOutputStream()
+            val wsIn = com.example.vpn.engine.ssh.WebSocketFramedInputStream(
+                java.io.ByteArrayInputStream(framed),
+                replyOut
+            )
+            val decoded = ByteArray(size)
+            var totalRead = 0
+            while (totalRead < size) {
+                val n = wsIn.read(decoded, totalRead, size - totalRead)
+                assertTrue(n > 0)
+                totalRead += n
+            }
+            org.junit.Assert.assertArrayEquals(original, decoded)
+            assertEquals(-1, wsIn.read())
+        }
+
+        // Test server Ping (0x89) -> automatic masked client Pong (0x8A) + subsequent binary SSH frame
+        val serverStream = java.io.ByteArrayOutputStream()
+        val pingPayload = "keepalive".toByteArray(Charsets.UTF_8)
+        serverStream.write(0x89) // FIN=1, Ping
+        serverStream.write(pingPayload.size)
+        serverStream.write(pingPayload)
+
+        val sshBanner = "SSH-2.0-OpenSSH_9.6p1\r\n".toByteArray(Charsets.UTF_8)
+        serverStream.write(0x82) // FIN=1, Binary
+        serverStream.write(sshBanner.size)
+        serverStream.write(sshBanner)
+
+        // Close frame (0x88)
+        serverStream.write(0x88)
+        serverStream.write(0x00)
+
+        val clientOut = java.io.ByteArrayOutputStream()
+        val wsIn = com.example.vpn.engine.ssh.WebSocketFramedInputStream(
+            java.io.ByteArrayInputStream(serverStream.toByteArray()),
+            clientOut
+        )
+        val received = ByteArray(sshBanner.size)
+        val n = wsIn.read(received)
+        assertEquals(sshBanner.size, n)
+        assertEquals("SSH-2.0-OpenSSH_9.6p1\r\n", String(received, Charsets.UTF_8))
+        assertEquals(-1, wsIn.read()) // Close frame returns EOF
+
+        val sentBytes = clientOut.toByteArray()
+        // First control reply must be masked Pong (0x8A) with length = pingPayload.size
+        assertEquals(0x8A, sentBytes[0].toInt() and 0xFF)
+        assertEquals(0x80 or pingPayload.size, sentBytes[1].toInt() and 0xFF)
+        val pongMask = sentBytes.sliceArray(2..5)
+        val unmaskedPong = ByteArray(pingPayload.size) { i ->
+            (sentBytes[6 + i].toInt() xor pongMask[i and 3].toInt()).toByte()
+        }
+        org.junit.Assert.assertArrayEquals(pingPayload, unmaskedPong)
+    }
+
+    @Test
+    fun testWebSocketHandshakeAndFramedSshStreamForwarding() {
+        val serverSocket = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        val port = serverSocket.localPort
+        val serverBanner = "SSH-2.0-OpenSSH_9.6p1_WS\r\n"
+
+        val serverThread = Thread {
+            serverSocket.use { srv ->
+                val client = srv.accept()
+                client.use { sock ->
+                    val inp = sock.getInputStream()
+                    val out = sock.getOutputStream()
+                    // Read client HTTP Upgrade request until blank line
+                    while (true) {
+                        val line = PayloadInjector.readLine(inp) ?: break
+                        if (line.isEmpty()) break
+                    }
+                    // Send HTTP 101 Switching Protocols followed immediately by a WebSocket binary frame containing SSH banner
+                    val responseHeaders = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+                    out.write(responseHeaders.toByteArray(Charsets.UTF_8))
+                    val bannerBytes = serverBanner.toByteArray(Charsets.UTF_8)
+                    out.write(byteArrayOf(0x82.toByte(), bannerBytes.size.toByte()))
+                    out.write(bannerBytes)
+                    out.flush()
+                }
+            }
+        }
+        serverThread.start()
+
+        val clientSocket = java.net.Socket()
+        val upgraded = PayloadInjector.injectAndConnect(
+            socket = clientSocket,
+            targetHost = "127.0.0.1",
+            targetPort = port,
+            proxyHost = "",
+            proxyPort = 0,
+            payload = "GET / HTTP/1.1[crlf]Host: 127.0.0.1[crlf]Upgrade: websocket[crlf][crlf]",
+            timeoutMs = 5000
+        )
+
+        assertTrue("Expected WebSocketFramedSocket when server sends WS binary frames", upgraded is com.example.vpn.engine.ssh.WebSocketFramedSocket)
+        val readLine = PayloadInjector.readLine(upgraded.getInputStream())
+        assertEquals("SSH-2.0-OpenSSH_9.6p1_WS", readLine)
+        upgraded.close()
+        serverThread.join(2000)
+    }
+
+    @Test
+    fun testHttp101WithoutSshSupportIsRejected() {
+        val serverSocket = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        val port = serverSocket.localPort
+
+        val serverThread = Thread {
+            serverSocket.use { srv ->
+                val client = srv.accept()
+                client.use { sock ->
+                    val inp = sock.getInputStream()
+                    val out = sock.getOutputStream()
+                    while (true) {
+                        val line = PayloadInjector.readLine(inp) ?: break
+                        if (line.isEmpty()) break
+                    }
+                    // Respond 101 Switching Protocols but send non-SSH HTML payload
+                    out.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n<html>Not an SSH Server</html>\r\n".toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+            }
+        }
+        serverThread.start()
+
+        var rejected = false
+        try {
+            PayloadInjector.injectAndConnect(
+                socket = java.net.Socket(),
+                targetHost = "127.0.0.1",
+                targetPort = port,
+                proxyHost = "",
+                proxyPort = 0,
+                payload = "GET / HTTP/1.1[crlf]Host: 127.0.0.1[crlf]Upgrade: websocket[crlf][crlf]",
+                timeoutMs = 5000
+            )
+        } catch (e: IllegalStateException) {
+            rejected = e.message?.contains("SSH", ignoreCase = true) == true
+        }
+        assertTrue("101 response without SSH banner must be rejected", rejected)
+        serverThread.join(2000)
+    }
+
+    @Test
     fun testLiveSshConnection() {
         val target = "www.openx.com:80@Test:Test1"
         val payload = "GET / HTTP/1.1[crlf]Host: geeksvpn.kevintechtutorials.fun[crlf]Upgrade: websocket[crlf][crlf]"
         val parsed = com.example.parser.SshTargetParser.parse(target)!!
 
         val rawSocket = java.net.Socket()
+        try { rawSocket.bind(null) } catch (_: Exception) {}
         val upgraded = PayloadInjector.injectAndConnect(
             socket = rawSocket,
             targetHost = parsed.host,
@@ -342,6 +508,10 @@ class ExampleUnitTest {
         config["StrictHostKeyChecking"] = "no"
         config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
         session.setConfig(config)
+        // Regression test: verify session timeout and serverAliveInterval in milliseconds
+        // (matching SshEngineAdapter configuration so KEX does not fail with "timeout in waiting for rekeying process")
+        session.timeout = 30_000
+        session.serverAliveCountMax = 3
 
         session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
             override fun createSocket(host: String, port: Int): java.net.Socket = upgraded
@@ -350,7 +520,10 @@ class ExampleUnitTest {
         })
 
         try {
-            session.connect(30000)
+            session.connect(30_000)
+            session.serverAliveInterval = 30_000
+            assertTrue(session.isConnected)
+            assertTrue(session.serverVersion.startsWith("SSH-2.0-"))
             println("SESSION CONNECTED: " + session.isConnected + ", serverVersion: " + session.serverVersion)
             session.disconnect()
         } catch (e: Exception) {

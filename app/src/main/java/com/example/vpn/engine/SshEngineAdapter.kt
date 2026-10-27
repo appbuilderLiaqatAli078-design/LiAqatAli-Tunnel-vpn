@@ -83,22 +83,48 @@ class SshEngineAdapter : VpnEngineAdapter {
             }
             session.setSocketFactory(customSocketFactory)
 
-            // 3. Security and connection configuration
+            // 3. Security, handshake stage logging, and connection configuration
+            JSch.setLogger(object : com.jcraft.jsch.Logger {
+                override fun isEnabled(level: Int): Boolean = level >= com.jcraft.jsch.Logger.INFO
+                override fun log(level: Int, message: String?) {
+                    if (message.isNullOrBlank()) return
+                    val sanitized = AppLogger.redact(message)
+                    when {
+                        level >= com.jcraft.jsch.Logger.ERROR -> AppLogger.e(TAG, "[SSH-Handshake] $sanitized")
+                        level == com.jcraft.jsch.Logger.WARN -> AppLogger.w(TAG, "[SSH-Handshake] $sanitized")
+                        message.contains("version string", ignoreCase = true) ||
+                        message.contains("KEXINIT", ignoreCase = true) ||
+                        message.contains("NEWKEYS", ignoreCase = true) ||
+                        message.contains("Accepting", ignoreCase = true) ||
+                        message.contains("Authentication", ignoreCase = true) ||
+                        message.contains("Connection established", ignoreCase = true) -> {
+                            AppLogger.i(TAG, "[SSH-Handshake] $sanitized")
+                        }
+                        else -> AppLogger.d(TAG, "[SSH-Handshake] $sanitized")
+                    }
+                }
+            })
+
             val config = java.util.Properties()
             config["StrictHostKeyChecking"] = "no"
             config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
             session.setConfig(config)
-            session.serverAliveInterval = 30
+            // NOTE: JSch timeouts and serverAliveInterval are in MILLISECONDS (not seconds).
+            // Setting serverAliveInterval=30 sets session.timeout=30ms, which causes
+            // Session.write() during initial key exchange (in_kex=true) to abort with
+            // "timeout in waiting for rekeying process." whenever KEX takes > 30ms.
+            session.timeout = 30_000
             session.serverAliveCountMax = 3
 
             AppLogger.i(TAG, "Connecting SSH session (handshake and authentication)...")
-            session.connect(30000)
+            session.connect(30_000)
 
             if (!session.isConnected) {
                 AppLogger.e(TAG, "SSH session connection failed")
                 return@withContext false
             }
 
+            session.serverAliveInterval = 30_000
             AppLogger.i(TAG, "SSH session authenticated (${session.serverVersion})")
             jschSession = session
 

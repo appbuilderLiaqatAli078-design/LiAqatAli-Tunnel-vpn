@@ -95,8 +95,8 @@ object PayloadInjector {
                 output.flush()
             }
 
-            // CRITICAL: Read and consume the HTTP response headers
-            // so the socket stream is cleanly positioned for SSH handshake without desynchronization.
+            // CRITICAL: Read and consume the HTTP response headers byte-by-byte
+            // so the socket stream is cleanly positioned at the exact end of "\r\n\r\n".
             AppLogger.i(TAG, "Awaiting HTTP transport response from $connectHost:$connectPort (read timeout: ${timeoutMs}ms)...")
             val input: InputStream = socket.getInputStream()
             var statusLine: String? = null
@@ -118,18 +118,111 @@ object PayloadInjector {
             }
 
             // Read remaining headers until blank line (\r\n\r\n)
+            val responseHeaders = mutableMapOf<String, String>()
             while (true) {
                 val headerLine = readLine(input) ?: break
                 if (headerLine.isEmpty()) break
+                val colonIdx = headerLine.indexOf(':')
+                if (colonIdx > 0) {
+                    val key = headerLine.substring(0, colonIdx).trim().lowercase()
+                    val value = headerLine.substring(colonIdx + 1).trim()
+                    responseHeaders[key] = value
+                }
             }
-            AppLogger.i(TAG, "HTTP transport handshake verified ($statusLine). Consumed headers cleanly.")
+            AppLogger.i(TAG, "HTTP transport handshake headers consumed ($statusLine). Verifying SSH transport stream...")
 
-            socket.soTimeout = 0
-            return socket
+            return verifyAndWrapUpgradedSocket(
+                socket = socket,
+                statusCode = statusCode,
+                responseHeaders = responseHeaders,
+                timeoutMs = timeoutMs
+            )
         }
 
         socket.soTimeout = 0
         return socket
+    }
+
+    fun verifyAndWrapUpgradedSocket(
+        socket: Socket,
+        statusCode: Int,
+        responseHeaders: Map<String, String>,
+        timeoutMs: Int
+    ): Socket {
+        val pushback = PushbackInputStream(socket.getInputStream(), 8192)
+        socket.soTimeout = minOf(timeoutMs, 15000)
+
+        val b0 = try {
+            pushback.read()
+        } catch (e: java.net.SocketTimeoutException) {
+            if (statusCode == 101 && responseHeaders.containsKey("sec-websocket-accept")) {
+                AppLogger.i(TAG, "RFC 6455 WebSocket server awaiting client frame first; wrapping in WebSocketFramedSocket")
+                socket.soTimeout = 0
+                return WebSocketFramedSocket(socket, pushback)
+            }
+            throw IllegalStateException("Timed out waiting for SSH banner after HTTP $statusCode response", e)
+        }
+
+        if (b0 == -1) {
+            throw IllegalStateException("Endpoint returned HTTP $statusCode but closed the connection before SSH handshake")
+        }
+
+        if (b0 == 0x88) {
+            throw IllegalStateException("WebSocket endpoint rejected tunnel with Close frame (0x88) immediately after HTTP 101")
+        }
+
+        val isWebSocketFrameByte = b0 in listOf(0x81, 0x82, 0x89, 0x8A, 0x01, 0x02)
+        if (isWebSocketFrameByte) {
+            pushback.unread(b0)
+            val wsSocket = WebSocketFramedSocket(socket, pushback)
+            val wsPushback = wsSocket.pushbackInputStream
+            val decodedBannerBytes = readBannerBytes(wsPushback)
+            if (decodedBannerBytes.isEmpty()) {
+                throw IllegalStateException("WebSocket endpoint closed stream without sending an SSH banner")
+            }
+            val decodedBanner = String(decodedBannerBytes, Charsets.UTF_8)
+            wsPushback.unread(decodedBannerBytes)
+            if (!decodedBanner.contains("SSH-")) {
+                throw IllegalStateException(
+                    "WebSocket endpoint does not support SSH-over-WebSocket (received: ${decodedBanner.take(80).trim()})"
+                )
+            }
+            AppLogger.i(TAG, "Verified WebSocket-framed SSH server banner: ${decodedBanner.trim()}")
+            socket.soTimeout = 0
+            return wsSocket
+        }
+
+        // Raw stream after HTTP 101 / 200
+        val baos = java.io.ByteArrayOutputStream()
+        baos.write(b0)
+        val restBytes = readBannerBytes(pushback)
+        if (restBytes.isNotEmpty()) {
+            baos.write(restBytes)
+        }
+        val allPeeked = baos.toByteArray()
+        val bannerText = String(allPeeked, Charsets.UTF_8)
+        pushback.unread(allPeeked)
+
+        if (!bannerText.contains("SSH-")) {
+            throw IllegalStateException(
+                "Endpoint returned HTTP $statusCode but did not provide a valid SSH protocol banner (received: ${bannerText.take(80).trim()})"
+            )
+        }
+
+        AppLogger.i(TAG, "Verified upstream SSH server banner: ${bannerText.trim()}")
+        socket.soTimeout = 0
+        return UpgradedSocket(socket, pushback, socket.getOutputStream())
+    }
+
+    private fun readBannerBytes(input: InputStream, maxBytes: Int = 256): ByteArray {
+        val baos = java.io.ByteArrayOutputStream()
+        while (baos.size() < maxBytes) {
+            val b = input.read()
+            if (b == -1) break
+            baos.write(b)
+            if (b == '\n'.code) break
+        }
+        return baos.toByteArray()
     }
 
     private fun extractStatusCode(statusLine: String): Int {

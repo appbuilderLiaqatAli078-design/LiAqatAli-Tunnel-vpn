@@ -20,11 +20,13 @@ class SshSocketFactory(
     private val TAG = "SshSocketFactory"
 
     override fun createSocket(host: String, port: Int): Socket {
-        val rawSocket = try {
-            java.nio.channels.SocketChannel.open().socket()
-        } catch (e: Exception) {
-            Socket()
-        }
+        val rawSocket = Socket()
+        try {
+            // Pre-bind to an ephemeral local port so Android's PlainSocketImpl allocates
+            // the native OS FileDescriptor before VpnService.protect(), while preserving
+            // standard full-duplex SocketInputStream/SocketOutputStream without NIO blockingLock contention.
+            rawSocket.bind(null)
+        } catch (_: Exception) {}
         val isProtected = try {
             vpnService.protect(rawSocket)
         } catch (e: Exception) {
@@ -107,6 +109,7 @@ class SshSocketFactory(
                 } else {
                     rawSocket.connect(InetSocketAddress(host, port), timeoutMs)
                 }
+                try { vpnService.protect(rawSocket) } catch (ignored: Exception) {}
                 SshTlsHandler.wrapTls(
                     underlyingSocket = rawSocket,
                     sniHost = sniHost,
@@ -120,6 +123,7 @@ class SshSocketFactory(
                 val connectHost = if (profile.proxyHost.isNotBlank() && profile.proxyPort > 0) profile.proxyHost else host
                 val connectPort = if (profile.proxyHost.isNotBlank() && profile.proxyPort > 0) profile.proxyPort else port
                 rawSocket.connect(InetSocketAddress(connectHost, connectPort), timeoutMs)
+                try { vpnService.protect(rawSocket) } catch (ignored: Exception) {}
 
                 SshWebSocketHandler.upgradeWebSocket(
                     socket = rawSocket,
@@ -128,13 +132,13 @@ class SshSocketFactory(
                     customHeaders = profile.sshCustomHeaders,
                     timeoutMs = timeoutMs
                 )
-                rawSocket
             }
 
             SshTunnelMode.SECURE_WEBSOCKET, SshTunnelMode.SSL_WEBSOCKET -> {
                 val connectHost = if (profile.proxyHost.isNotBlank() && profile.proxyPort > 0) profile.proxyHost else host
                 val connectPort = if (profile.proxyHost.isNotBlank() && profile.proxyPort > 0) profile.proxyPort else port
                 rawSocket.connect(InetSocketAddress(connectHost, connectPort), timeoutMs)
+                try { vpnService.protect(rawSocket) } catch (ignored: Exception) {}
 
                 val tlsSocket = SshTlsHandler.wrapTls(
                     underlyingSocket = rawSocket,
@@ -151,7 +155,6 @@ class SshSocketFactory(
                     customHeaders = profile.sshCustomHeaders,
                     timeoutMs = timeoutMs
                 )
-                tlsSocket
             }
 
             SshTunnelMode.SOCKS4 -> {

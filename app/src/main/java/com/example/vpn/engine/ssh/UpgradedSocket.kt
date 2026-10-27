@@ -28,26 +28,40 @@ open class UpgradedSocket(
     override fun getRemoteSocketAddress(): SocketAddress? = underlyingSocket.remoteSocketAddress
     override fun getLocalSocketAddress(): SocketAddress? = underlyingSocket.localSocketAddress
 
-    override fun setTcpNoDelay(on: Boolean) { underlyingSocket.tcpNoDelay = on }
-    override fun getTcpNoDelay(): Boolean = underlyingSocket.tcpNoDelay
+    override fun setTcpNoDelay(on: Boolean) {
+        try { underlyingSocket.tcpNoDelay = on } catch (_: Exception) {}
+    }
+    override fun getTcpNoDelay(): Boolean = try { underlyingSocket.tcpNoDelay } catch (_: Exception) { true }
 
-    override fun setSoTimeout(timeout: Int) { underlyingSocket.soTimeout = timeout }
-    override fun getSoTimeout(): Int = underlyingSocket.soTimeout
+    override fun setSoTimeout(timeout: Int) {
+        try { underlyingSocket.soTimeout = timeout } catch (_: Exception) {}
+    }
+    override fun getSoTimeout(): Int = try { underlyingSocket.soTimeout } catch (_: Exception) { 0 }
 
-    override fun setSendBufferSize(size: Int) { underlyingSocket.sendBufferSize = size }
-    override fun getSendBufferSize(): Int = underlyingSocket.sendBufferSize
-    override fun setReceiveBufferSize(size: Int) { underlyingSocket.receiveBufferSize = size }
-    override fun getReceiveBufferSize(): Int = underlyingSocket.receiveBufferSize
+    override fun setSendBufferSize(size: Int) {
+        try { underlyingSocket.sendBufferSize = size } catch (_: Exception) {}
+    }
+    override fun getSendBufferSize(): Int = try { underlyingSocket.sendBufferSize } catch (_: Exception) { 65536 }
+    override fun setReceiveBufferSize(size: Int) {
+        try { underlyingSocket.receiveBufferSize = size } catch (_: Exception) {}
+    }
+    override fun getReceiveBufferSize(): Int = try { underlyingSocket.receiveBufferSize } catch (_: Exception) { 65536 }
 
-    override fun setKeepAlive(on: Boolean) { underlyingSocket.keepAlive = on }
-    override fun getKeepAlive(): Boolean = underlyingSocket.keepAlive
+    override fun setKeepAlive(on: Boolean) {
+        try { underlyingSocket.keepAlive = on } catch (_: Exception) {}
+    }
+    override fun getKeepAlive(): Boolean = try { underlyingSocket.keepAlive } catch (_: Exception) { false }
 
-    override fun shutdownInput() { underlyingSocket.shutdownInput() }
-    override fun shutdownOutput() { underlyingSocket.shutdownOutput() }
+    override fun shutdownInput() {
+        try { underlyingSocket.shutdownInput() } catch (_: Exception) {}
+    }
+    override fun shutdownOutput() {
+        try { underlyingSocket.shutdownOutput() } catch (_: Exception) {}
+    }
 
     override fun close() {
-        try { upgradedInputStream.close() } catch (ignored: Exception) {}
-        try { upgradedOutputStream.close() } catch (ignored: Exception) {}
-        try { underlyingSocket.close() } catch (ignored: Exception) {}
+        try { upgradedInputStream.close() } catch (_: Exception) {}
+        try { upgradedOutputStream.close() } catch (_: Exception) {}
+        try { underlyingSocket.close() } catch (_: Exception) {}
     }
 }
