@@ -289,13 +289,60 @@ class ExampleUnitTest {
             targetPort = 80
         )
 
+        // Exact CRLF replacement without unexpected extra headers or spaces
+        assertEquals("GET / HTTP/1.1\r\nHost: geeksvpn.kevintechtutorials.fun\r\nUpgrade: websocket\r\n\r\n", formatted)
         assertFalse(formatted.contains("[crlf]", ignoreCase = true))
-        assertTrue(formatted.startsWith("GET / HTTP/1.1\r\n"))
-        assertTrue(formatted.contains("Host: geeksvpn.kevintechtutorials.fun\r\n"))
-        assertTrue(formatted.contains("Upgrade: websocket\r\n", ignoreCase = true))
-        assertTrue(formatted.contains("Connection: Upgrade\r\n", ignoreCase = true))
-        assertTrue(formatted.contains("Sec-WebSocket-Key: "))
-        assertTrue(formatted.contains("Sec-WebSocket-Version: 13\r\n"))
-        assertTrue(formatted.endsWith("\r\n\r\n"))
+    }
+
+    @Test
+    fun testEmptyPayloadDoesNotSendConnectInDirectMode() {
+        val formatted = PayloadInjector.formatPayload(
+            rawTemplate = "",
+            targetHost = "www.openx.com",
+            targetPort = 80
+        )
+        // Must not generate CONNECT for direct mode when payload is empty
+        assertEquals("", formatted)
+    }
+
+    @Test
+    fun testLiveSshConnection() {
+        val target = "www.openx.com:80@Test:Test1"
+        val payload = "GET / HTTP/1.1[crlf]Host: geeksvpn.kevintechtutorials.fun[crlf]Upgrade: websocket[crlf][crlf]"
+        val parsed = com.example.parser.SshTargetParser.parse(target)!!
+
+        val rawSocket = java.net.Socket()
+        val upgraded = PayloadInjector.injectAndConnect(
+            socket = rawSocket,
+            targetHost = parsed.host,
+            targetPort = parsed.port,
+            proxyHost = "",
+            proxyPort = 0,
+            payload = payload
+        )
+
+        val jsch = com.jcraft.jsch.JSch()
+        val session = jsch.getSession(parsed.username, parsed.host, parsed.port)
+        session.setPassword(parsed.password)
+        val config = java.util.Properties()
+        config["StrictHostKeyChecking"] = "no"
+        config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
+        session.setConfig(config)
+
+        session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
+            override fun createSocket(host: String, port: Int): java.net.Socket = upgraded
+            override fun getInputStream(socket: java.net.Socket): java.io.InputStream = socket.getInputStream()
+            override fun getOutputStream(socket: java.net.Socket): java.io.OutputStream = socket.getOutputStream()
+        })
+
+        try {
+            session.connect(10000)
+            println("SESSION CONNECTED: " + session.isConnected + ", serverVersion: " + session.serverVersion)
+            session.disconnect()
+        } catch (e: Exception) {
+            println("SESSION FAILED WITH: " + e.javaClass.name + ": " + e.message)
+            e.printStackTrace()
+            throw e
+        }
     }
 }

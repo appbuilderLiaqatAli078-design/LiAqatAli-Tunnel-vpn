@@ -152,7 +152,16 @@ class SshEngineAdapter : VpnEngineAdapter {
             AppLogger.i(TAG, "SSH Tunnel Engine and HEV forwarder successfully running [${profile.sshMode.displayName}]")
             true
         } catch (e: Throwable) {
-            AppLogger.e(TAG, "Error starting SSH engine: ${e.message}", e)
+            val userFriendlyMsg = when {
+                e is java.net.ConnectException -> "Connection refused: Unable to connect to ${profile.server}:${profile.port}"
+                e is java.net.SocketTimeoutException -> "Connection timed out connecting to ${profile.server}:${profile.port}"
+                e.message?.contains("Auth fail", ignoreCase = true) == true -> "SSH Authentication failed: Invalid username or password/key"
+                e.message?.contains("rekeying", ignoreCase = true) == true -> "SSH key exchange timed out or transport desynchronized: ${e.message}"
+                e.message?.contains("rejected", ignoreCase = true) == true -> e.message ?: "Server rejected HTTP tunnel"
+                e.message?.contains("handshake", ignoreCase = true) == true -> e.message ?: "Transport handshake failed"
+                else -> "Error starting SSH engine: ${e.message}"
+            }
+            AppLogger.e(TAG, userFriendlyMsg, e)
             stop()
             false
         }

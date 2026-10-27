@@ -23,11 +23,7 @@ object PayloadInjector {
         method: String = "CONNECT"
     ): String {
         if (rawTemplate.isBlank()) {
-            val authHeader = if (proxyUser.isNotBlank()) {
-                val creds = Base64.encodeToString("$proxyUser:$proxyPass".toByteArray(), Base64.NO_WRAP)
-                "Proxy-Authorization: Basic $creds\r\n"
-            } else ""
-            return "CONNECT $targetHost:$targetPort HTTP/1.1\r\nHost: $targetHost\r\n${authHeader}Proxy-Connection: Keep-Alive\r\n\r\n"
+            return ""
         }
 
         val authReplacement = if (proxyUser.isNotBlank()) {
@@ -36,43 +32,18 @@ object PayloadInjector {
         } else ""
 
         var result = rawTemplate
+            .replace("[crlf]", "\r\n", ignoreCase = true)
+            .replace("[cr]", "\r", ignoreCase = true)
+            .replace("[lf]", "\n", ignoreCase = true)
             .replace("[host_port]", "$targetHost:$targetPort", ignoreCase = true)
             .replace("[host]", targetHost, ignoreCase = true)
             .replace("[port]", targetPort.toString(), ignoreCase = true)
             .replace("[method]", method, ignoreCase = true)
             .replace("[protocol]", "HTTP/1.1", ignoreCase = true)
             .replace("[auth]", authReplacement, ignoreCase = true)
-            .replace("[crlf]", "\r\n", ignoreCase = true)
-            .replace("[cr]", "\r", ignoreCase = true)
-            .replace("[lf]", "\n", ignoreCase = true)
             .replace("[ua]", "Mozilla/5.0 (Android; Mobile; AegisTunnel)", ignoreCase = true)
             .replace("[reverse_proxy]", "X-Forwarded-For: 127.0.0.1\r\nX-Real-IP: 127.0.0.1", ignoreCase = true)
             .replace("[raw]", "", ignoreCase = true)
-
-        // WebSocket Handshake Compliance: If the payload specifies Upgrade: websocket,
-        // ensure standard compliant WebSocket upgrade headers are present.
-        if (result.contains("Upgrade: websocket", ignoreCase = true)) {
-            val missingHeaders = StringBuilder()
-            if (!result.contains("Connection:", ignoreCase = true)) {
-                missingHeaders.append("Connection: Upgrade\r\n")
-            }
-            if (!result.contains("Sec-WebSocket-Key:", ignoreCase = true)) {
-                val randomKey = Base64.encodeToString(ByteArray(16).apply { Random.nextBytes(this) }, Base64.NO_WRAP)
-                missingHeaders.append("Sec-WebSocket-Key: $randomKey\r\n")
-            }
-            if (!result.contains("Sec-WebSocket-Version:", ignoreCase = true)) {
-                missingHeaders.append("Sec-WebSocket-Version: 13\r\n")
-            }
-
-            if (missingHeaders.isNotEmpty()) {
-                val crlfIdx = result.indexOf("\r\n\r\n")
-                result = if (crlfIdx >= 0) {
-                    result.substring(0, crlfIdx + 2) + missingHeaders.toString() + result.substring(crlfIdx + 2)
-                } else {
-                    result.trimEnd() + "\r\n" + missingHeaders.toString() + "\r\n"
-                }
-            }
-        }
 
         if (!result.contains("[split]", ignoreCase = true) && !result.endsWith("\r\n\r\n")) {
             result += if (result.endsWith("\r\n")) "\r\n" else "\r\n\r\n"
@@ -100,7 +71,7 @@ object PayloadInjector {
         }
         socket.soTimeout = timeoutMs
 
-        if (payload.isNotBlank() || (proxyHost.isNotBlank() && proxyPort > 0)) {
+        if (payload.isNotBlank()) {
             val formatted = formatPayload(payload, targetHost, targetPort, proxyUser, proxyPass)
             val output: OutputStream = socket.getOutputStream()
 
@@ -120,7 +91,7 @@ object PayloadInjector {
                 output.flush()
             }
 
-            // CRITICAL: Read and consume the HTTP response headers (whether direct or proxied)
+            // CRITICAL: Read and consume the HTTP response headers
             // so the socket stream is cleanly positioned for SSH handshake without desynchronization.
             AppLogger.i(TAG, "Awaiting HTTP transport response from $connectHost:$connectPort...")
             val input: InputStream = socket.getInputStream()
@@ -149,31 +120,8 @@ object PayloadInjector {
             }
             AppLogger.i(TAG, "HTTP transport handshake verified ($statusLine). Consumed headers cleanly.")
 
-            // Peek at the first incoming byte after HTTP headers to detect whether the endpoint
-            // is sending a raw SSH banner (starts with 'S' = 0x53) or RFC 6455 WebSocket frames (starts with 0x82).
-            val pushback = PushbackInputStream(socket.getInputStream(), 8)
-            socket.soTimeout = 400
-            var firstByte = -1
-            try {
-                firstByte = pushback.read()
-            } catch (ignored: Exception) {
-                // If server sends banner after client or timed out, default to raw stream
-            } finally {
-                socket.soTimeout = 0
-            }
-
-            if (firstByte != -1) {
-                pushback.unread(firstByte)
-            }
-
-            val upgradedSocket = if (firstByte == 0x82 || firstByte == 0x81) {
-                AppLogger.i(TAG, "Detected WebSocket framed binary stream (0x${Integer.toHexString(firstByte)})")
-                WebSocketFramedSocket(socket, pushback)
-            } else {
-                AppLogger.i(TAG, "Detected raw transparent stream for SSH (starts with '${if (firstByte != -1) firstByte.toChar() else "empty"}')")
-                UpgradedSocket(socket, pushback)
-            }
-            return upgradedSocket
+            socket.soTimeout = 0
+            return UpgradedSocket(socket, socket.getInputStream())
         }
 
         socket.soTimeout = 0

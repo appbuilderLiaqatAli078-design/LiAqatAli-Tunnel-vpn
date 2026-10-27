@@ -312,10 +312,30 @@ fun ProfileEditScreen(
                     when (sshMode) {
                         SshTunnelMode.DIRECT -> {
                             Text(
-                                text = "Standard direct connection to remote SSH daemon. Uses full-device TUN forwarding through local SOCKS5 routing.",
+                                text = "Direct SSH server connection with optional custom injector payload (e.g. WebSocket / HTTP payload).",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            OutlinedTextField(
+                                value = sshPayload,
+                                onValueChange = { sshPayload = it },
+                                label = { Text("Custom HTTP / WebSocket Payload (Optional)") },
+                                placeholder = { Text("GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf]") },
+                                modifier = Modifier.fillMaxWidth().height(120.dp).testTag("edit_ssh_payload_direct"),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("[crlf]", "[host]", "[port]", "[host_port]", "[method]", "[protocol]", "[ua]", "[split]").forEach { tag ->
+                                    AssistChip(
+                                        onClick = { sshPayload += tag },
+                                        label = { Text(tag) }
+                                    )
+                                }
+                            }
                         }
 
                         SshTunnelMode.HTTP_PROXY, SshTunnelMode.HTTP_CONNECT -> {
@@ -879,12 +899,20 @@ fun ProfileEditScreen(
 
             Button(
                 onClick = {
-                    val port = portText.toIntOrNull()
-                    if (server.isBlank()) {
+                    val targetInfo = if (protocol == ProtocolType.SSH && (server.contains("@") || server.startsWith("ssh://") || server.contains(":"))) {
+                        SshTargetParser.parse(server, portText.toIntOrNull() ?: 22)
+                    } else null
+
+                    val effectiveServer = targetInfo?.host ?: server
+                    val effectivePort = targetInfo?.port ?: portText.toIntOrNull()
+                    val effectiveUser = if (sshUser.isNotBlank() && sshUser != "root") sshUser else (targetInfo?.username?.ifBlank { "root" } ?: sshUser)
+                    val effectivePass = if (password.isNotBlank()) password else (targetInfo?.password ?: "")
+
+                    if (effectiveServer.isBlank()) {
                         errorMessage = "Server address cannot be empty"
                         return@Button
                     }
-                    if (port == null || port !in 1..65535) {
+                    if (effectivePort == null || effectivePort !in 1..65535) {
                         errorMessage = "Port must be between 1 and 65535"
                         return@Button
                     }
@@ -897,22 +925,22 @@ fun ProfileEditScreen(
 
                     val updated = (initialProfile ?: VpnProfile(
                         id = UUID.randomUUID().toString(),
-                        name = name.ifBlank { "Tunnel-$server:$port" },
+                        name = name.ifBlank { "Tunnel-$effectiveServer:$effectivePort" },
                         protocol = protocol,
-                        server = server,
-                        port = port
+                        server = effectiveServer,
+                        port = effectivePort
                     )).copy(
-                        name = name.ifBlank { "Tunnel-$server:$port" },
+                        name = name.ifBlank { "Tunnel-$effectiveServer:$effectivePort" },
                         protocol = protocol,
-                        server = server,
-                        port = port,
-                        password = password,
+                        server = effectiveServer,
+                        port = effectivePort,
+                        password = effectivePass,
                         security = security,
                         network = network,
                         sni = sni,
                         path = path,
                         publicKey = pbk,
-                        sshUsername = sshUser,
+                        sshUsername = effectiveUser,
                         sshPayload = sshPayload,
                         proxyHost = proxyHost,
                         proxyPort = proxyPortText.toIntOrNull() ?: 0,
