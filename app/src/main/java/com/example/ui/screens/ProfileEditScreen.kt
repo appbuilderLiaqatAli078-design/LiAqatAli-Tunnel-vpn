@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Terminal
+import com.example.parser.SshTargetParser
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -161,8 +162,23 @@ fun ProfileEditScreen(
         ) {
             OutlinedTextField(
                 value = server,
-                onValueChange = { server = it },
-                label = { Text("Server Host / IP") },
+                onValueChange = { input ->
+                    if (protocol == ProtocolType.SSH && (input.contains("@") || input.startsWith("ssh://"))) {
+                        val parsed = SshTargetParser.parse(input)
+                        if (parsed != null) {
+                            server = parsed.host
+                            portText = parsed.port.toString()
+                            if (parsed.username.isNotBlank()) sshUser = parsed.username
+                            if (parsed.password.isNotBlank()) password = parsed.password
+                            if (name.isBlank() || name == "New Profile") name = parsed.name ?: "SSH-${parsed.host}:${parsed.port}"
+                        } else {
+                            server = input
+                        }
+                    } else {
+                        server = input
+                    }
+                },
+                label = { Text("Server Host / IP (or target format)") },
                 modifier = Modifier.weight(2f).testTag("edit_server_host"),
                 shape = RoundedCornerShape(12.dp)
             )

@@ -249,4 +249,53 @@ class ExampleUnitTest {
         assertTrue(formatted.contains("[split]"))
         assertTrue(formatted.contains("Connection: Keep-Alive\r\n\r\n"))
     }
+
+    @Test
+    fun testSshTargetParserReferenceFormat() {
+        // Reference target format: www.openx.com:80@Test:Test1
+        val parsed = com.example.parser.SshTargetParser.parse("www.openx.com:80@Test:Test1")
+        assertNotNull(parsed)
+        assertEquals("www.openx.com", parsed!!.host)
+        assertEquals(80, parsed.port)
+        assertEquals("Test", parsed.username)
+        assertEquals("Test1", parsed.password)
+
+        // Alternate user:pass@host:port format
+        val parsedAlt = com.example.parser.SshTargetParser.parse("Test:Test1@www.openx.com:80")
+        assertNotNull(parsedAlt)
+        assertEquals("www.openx.com", parsedAlt!!.host)
+        assertEquals(80, parsedAlt.port)
+        assertEquals("Test", parsedAlt.username)
+        assertEquals("Test1", parsedAlt.password)
+
+        // ConfigParser handles direct target string
+        val configResult = ConfigParser.parse("www.openx.com:80@Test:Test1")
+        assertTrue(configResult is ParseResult.Success)
+        val profile = (configResult as ParseResult.Success).profile
+        assertEquals("www.openx.com", profile.server)
+        assertEquals(80, profile.port)
+        assertEquals("Test", profile.sshUsername)
+        assertEquals("Test1", profile.password)
+        assertEquals(ProtocolType.SSH, profile.protocol)
+    }
+
+    @Test
+    fun testPayloadInjectorReferenceWebSocketPayload() {
+        // Reference payload: GET / HTTP/1.1[crlf]Host: geeksvpn.kevintechtutorials.fun[crlf]Upgrade: websocket[crlf][crlf]
+        val payload = "GET / HTTP/1.1[crlf]Host: geeksvpn.kevintechtutorials.fun[crlf]Upgrade: websocket[crlf][crlf]"
+        val formatted = PayloadInjector.formatPayload(
+            rawTemplate = payload,
+            targetHost = "www.openx.com",
+            targetPort = 80
+        )
+
+        assertFalse(formatted.contains("[crlf]", ignoreCase = true))
+        assertTrue(formatted.startsWith("GET / HTTP/1.1\r\n"))
+        assertTrue(formatted.contains("Host: geeksvpn.kevintechtutorials.fun\r\n"))
+        assertTrue(formatted.contains("Upgrade: websocket\r\n", ignoreCase = true))
+        assertTrue(formatted.contains("Connection: Upgrade\r\n", ignoreCase = true))
+        assertTrue(formatted.contains("Sec-WebSocket-Key: "))
+        assertTrue(formatted.contains("Sec-WebSocket-Version: 13\r\n"))
+        assertTrue(formatted.endsWith("\r\n\r\n"))
+    }
 }

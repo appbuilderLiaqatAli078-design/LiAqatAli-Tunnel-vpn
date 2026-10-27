@@ -31,6 +31,7 @@ object ConfigParser {
                 trimmed.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(trimmed)
                 trimmed.startsWith("ssh://", ignoreCase = true) -> parseSshUri(trimmed)
                 trimmed.startsWith("{") -> parseJson(trimmed)
+                trimmed.contains("@") && !trimmed.contains("://") -> parseSshUri(trimmed)
                 else -> ParseResult.Failure("Unsupported format. Expected vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON.")
             }
         } catch (e: Exception) {
@@ -198,15 +199,21 @@ object ConfigParser {
     }
 
     private fun parseSshUri(uriStr: String): ParseResult {
-        val uri = Uri.parse(uriStr)
-        val userInfo = uri.userInfo ?: ""
-        val host = uri.host ?: return ParseResult.Failure("SSH missing host")
-        val port = if (uri.port > 0) uri.port else 22
-        val userParts = userInfo.split(":")
-        val username = userParts.getOrNull(0) ?: "root"
-        val password = userParts.getOrNull(1) ?: ""
-        val queryParams = parseQueryParams(uri.query)
-        val name = uri.fragment?.let { URLDecoder.decode(it, "UTF-8") } ?: "SSH-$host:$port"
+        val targetInfo = SshTargetParser.parse(uriStr)
+        val host = targetInfo?.host ?: ""
+        if (host.isEmpty()) return ParseResult.Failure("SSH configuration missing host")
+        val port = targetInfo?.port ?: 22
+        val username = targetInfo?.username?.ifBlank { "root" } ?: "root"
+        val password = targetInfo?.password ?: ""
+
+        val queryParams = if (uriStr.contains("?")) {
+            val queryStr = uriStr.substringAfter("?").substringBefore("#")
+            parseQueryParams(queryStr)
+        } else emptyMap()
+
+        val name = targetInfo?.name ?: (if (uriStr.contains("#")) {
+            URLDecoder.decode(uriStr.substringAfter("#"), "UTF-8")
+        } else "SSH-$host:$port")
         val payload = queryParams["payload"] ?: ""
         val proxyHost = queryParams["proxy_host"] ?: ""
         val proxyPort = queryParams["proxy_port"]?.toIntOrNull() ?: 0

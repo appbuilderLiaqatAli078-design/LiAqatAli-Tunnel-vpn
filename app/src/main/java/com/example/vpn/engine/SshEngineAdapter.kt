@@ -3,6 +3,7 @@ package com.example.vpn.engine
 import com.example.data.AppLogger
 import com.example.model.SshTunnelMode
 import com.example.model.VpnProfile
+import com.example.parser.SshTargetParser
 import com.example.vpn.AegisVpnService
 import com.example.vpn.engine.ssh.SshSocketFactory
 import com.jcraft.jsch.ChannelDirectTCPIP
@@ -43,25 +44,42 @@ class SshEngineAdapter : VpnEngineAdapter {
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             currentMode = profile.sshMode
-            AppLogger.i(TAG, "Initializing SSH [${profile.sshMode.displayName}] to ${profile.server}:${profile.port}")
+
+            // Normalize target string if server contains user/pass/port info (e.g. www.openx.com:80@Test:Test1)
+            val parsedTarget = if (profile.server.contains("@") || profile.server.startsWith("ssh://")) {
+                SshTargetParser.parse(profile.server, profile.port)
+            } else null
+
+            val effectiveServer = parsedTarget?.host ?: profile.server
+            val effectivePort = parsedTarget?.port ?: profile.port
+            val effectiveUser = if (profile.sshUsername.isNotBlank()) profile.sshUsername else (parsedTarget?.username?.ifBlank { "root" } ?: "root")
+            val effectivePass = if (profile.password.isNotBlank()) profile.password else (parsedTarget?.password ?: "")
+            val effectiveProfile = profile.copy(
+                server = effectiveServer,
+                port = effectivePort,
+                sshUsername = effectiveUser,
+                password = effectivePass
+            )
+
+            AppLogger.i(TAG, "Initializing SSH [${effectiveProfile.sshMode.displayName}] to ${effectiveProfile.server}:${effectiveProfile.port}")
             val jsch = JSch()
 
             // 1. Configure Private Key identity if provided
-            if (profile.sshPrivateKey.isNotBlank()) {
-                val keyBytes = profile.sshPrivateKey.trim().toByteArray(Charsets.UTF_8)
-                val passBytes = if (profile.sshPassphrase.isNotBlank()) {
-                    profile.sshPassphrase.toByteArray(Charsets.UTF_8)
+            if (effectiveProfile.sshPrivateKey.isNotBlank()) {
+                val keyBytes = effectiveProfile.sshPrivateKey.trim().toByteArray(Charsets.UTF_8)
+                val passBytes = if (effectiveProfile.sshPassphrase.isNotBlank()) {
+                    effectiveProfile.sshPassphrase.toByteArray(Charsets.UTF_8)
                 } else null
                 jsch.addIdentity("user_key", keyBytes, null, passBytes)
-                AppLogger.i(TAG, "Configured SSH private key authentication for user '${profile.sshUsername}'")
+                AppLogger.i(TAG, "Configured SSH private key authentication for user '${effectiveProfile.sshUsername}'")
             }
 
-            // 2. Set custom transport socket factory supporting all 15 modes
-            val customSocketFactory = SshSocketFactory(profile, vpnService)
+            // 2. Set custom transport socket factory supporting all modes
+            val customSocketFactory = SshSocketFactory(effectiveProfile, vpnService)
 
-            val session = jsch.getSession(profile.sshUsername, profile.server, profile.port)
-            if (profile.password.isNotBlank()) {
-                session.setPassword(profile.password)
+            val session = jsch.getSession(effectiveProfile.sshUsername, effectiveProfile.server, effectiveProfile.port)
+            if (effectiveProfile.password.isNotBlank()) {
+                session.setPassword(effectiveProfile.password)
             }
             session.setSocketFactory(customSocketFactory)
 

@@ -55,13 +55,13 @@ object SshWebSocketHandler {
         val statusLine = PayloadInjector.readLine(input)
         AppLogger.i(TAG, "WebSocket upgrade status line: $statusLine")
 
-        if (!statusLine.contains("101")) {
+        if (statusLine == null || !statusLine.contains("101")) {
             throw IllegalStateException("WebSocket Upgrade failed: $statusLine")
         }
 
         // Consume remaining HTTP headers
         var line = PayloadInjector.readLine(input)
-        while (line.isNotEmpty()) {
+        while (!line.isNullOrEmpty()) {
             line = PayloadInjector.readLine(input)
         }
 

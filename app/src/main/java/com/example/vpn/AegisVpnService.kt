@@ -21,6 +21,7 @@ import com.example.model.ProtocolType
 import com.example.model.TrafficStats
 import com.example.model.VpnProfile
 import com.example.model.VpnState
+import com.example.parser.SshTargetParser
 import com.example.vpn.engine.HevTunnelManager
 import com.example.vpn.engine.SshEngineAdapter
 import com.example.vpn.engine.VpnEngineAdapter
@@ -97,37 +98,51 @@ class AegisVpnService : VpnService() {
         connectionJob?.cancel()
         connectionJob = serviceScope.launch {
             try {
-                activeProfileData = profile
-                _vpnState.value = VpnState.Validating("Validating server ${profile.server}:${profile.port}")
+                // Normalize SSH profile if server address contains user/pass/port in target format (e.g. www.openx.com:80@Test:Test1)
+                var effectiveProfile = profile
+                if (effectiveProfile.protocol == ProtocolType.SSH && (effectiveProfile.server.contains("@") || effectiveProfile.server.startsWith("ssh://"))) {
+                    val parsed = SshTargetParser.parse(effectiveProfile.server, effectiveProfile.port)
+                    if (parsed != null) {
+                        effectiveProfile = effectiveProfile.copy(
+                            server = parsed.host,
+                            port = parsed.port,
+                            sshUsername = if (effectiveProfile.sshUsername.isBlank()) parsed.username else effectiveProfile.sshUsername,
+                            password = if (effectiveProfile.password.isBlank()) parsed.password else effectiveProfile.password
+                        )
+                    }
+                }
+
+                activeProfileData = effectiveProfile
+                _vpnState.value = VpnState.Validating("Validating server ${effectiveProfile.server}:${effectiveProfile.port}")
                 updateNotification("Validating connection...", false)
 
                 // Basic address / port validation
-                if (profile.server.isBlank() || profile.port !in 1..65535) {
-                    throw IllegalArgumentException("Invalid server address or port: ${profile.server}:${profile.port}")
+                if (effectiveProfile.server.isBlank() || effectiveProfile.port !in 1..65535) {
+                    throw IllegalArgumentException("Invalid server address or port: ${effectiveProfile.server}:${effectiveProfile.port}")
                 }
 
                 _vpnState.value = VpnState.StartingEngine(
-                    if (profile.protocol == ProtocolType.SSH) "SSH Tunnel Engine" else "Xray Core Engine"
+                    if (effectiveProfile.protocol == ProtocolType.SSH) "SSH Tunnel Engine" else "Xray Core Engine"
                 )
 
                 // Establish TUN interface
-                val tunPfd = establishTun(profile)
+                val tunPfd = establishTun(effectiveProfile)
                 if (tunPfd == null) {
                     throw IllegalStateException("Failed to establish Android TUN interface")
                 }
                 tunInterface = tunPfd
 
                 // Select and initialize engine adapter
-                val engine: VpnEngineAdapter = when (profile.protocol) {
+                val engine: VpnEngineAdapter = when (effectiveProfile.protocol) {
                     ProtocolType.SSH -> SshEngineAdapter()
                     else -> XrayEngineAdapter()
                 }
                 currentEngine = engine
 
-                _vpnState.value = VpnState.Connecting(profile.name)
-                updateNotification("Connecting to ${profile.name}...", false)
+                _vpnState.value = VpnState.Connecting(effectiveProfile.name)
+                updateNotification("Connecting to ${effectiveProfile.name}...", false)
 
-                val started = engine.start(profile, this@AegisVpnService, tunPfd.fd)
+                val started = engine.start(effectiveProfile, this@AegisVpnService, tunPfd.fd)
                 if (!started) {
                     throw IllegalStateException("Tunnel engine failed to start or attach")
                 }

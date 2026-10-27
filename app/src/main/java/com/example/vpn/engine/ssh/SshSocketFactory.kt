@@ -31,8 +31,22 @@ class SshSocketFactory(
 
         return when (profile.sshMode) {
             SshTunnelMode.DIRECT -> {
-                rawSocket.connect(InetSocketAddress(host, port), timeoutMs)
-                rawSocket
+                if (profile.sshPayload.isNotBlank()) {
+                    PayloadInjector.injectAndConnect(
+                        socket = rawSocket,
+                        targetHost = host,
+                        targetPort = port,
+                        proxyHost = "",
+                        proxyPort = 0,
+                        payload = profile.sshPayload,
+                        proxyUser = profile.sshProxyUser,
+                        proxyPass = profile.sshProxyPass,
+                        timeoutMs = timeoutMs
+                    )
+                } else {
+                    rawSocket.connect(InetSocketAddress(host, port), timeoutMs)
+                    rawSocket
+                }
             }
 
             SshTunnelMode.HTTP_PROXY, SshTunnelMode.HTTP_CONNECT -> {
@@ -64,7 +78,6 @@ class SshSocketFactory(
                     proxyPass = profile.sshProxyPass,
                     timeoutMs = timeoutMs
                 )
-                rawSocket
             }
 
             SshTunnelMode.SSL_TLS -> {

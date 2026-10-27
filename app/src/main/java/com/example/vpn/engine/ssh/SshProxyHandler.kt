@@ -61,13 +61,13 @@ object SshProxyHandler {
         val statusLine = PayloadInjector.readLine(input)
         AppLogger.i(TAG, "HTTP Proxy status: $statusLine")
 
-        if (!statusLine.contains("200")) {
+        if (statusLine == null || !statusLine.contains("200")) {
             throw IllegalStateException("HTTP Proxy CONNECT rejected: $statusLine")
         }
 
         // Consume remaining headers
         var line = PayloadInjector.readLine(input)
-        while (line.isNotEmpty()) {
+        while (!line.isNullOrEmpty()) {
             line = PayloadInjector.readLine(input)
         }
         socket.soTimeout = 0
