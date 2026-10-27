@@ -151,26 +151,29 @@ fun ProfileEditScreen(
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
-            label = { Text("Profile Name") },
+            label = { Text("Profile Name", maxLines = 1) },
+            singleLine = true,
             modifier = Modifier.fillMaxWidth().testTag("edit_profile_name"),
             shape = RoundedCornerShape(12.dp)
         )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             OutlinedTextField(
                 value = server,
                 onValueChange = { input ->
-                    if (protocol == ProtocolType.SSH && (input.contains("@") || input.startsWith("ssh://"))) {
+                    if (protocol == ProtocolType.SSH && (input.contains("@") || input.startsWith("ssh://") || input.contains(":"))) {
                         val parsed = SshTargetParser.parse(input)
                         if (parsed != null) {
                             server = parsed.host
                             portText = parsed.port.toString()
                             if (parsed.username.isNotBlank()) sshUser = parsed.username
                             if (parsed.password.isNotBlank()) password = parsed.password
-                            if (name.isBlank() || name == "New Profile") name = parsed.name ?: "SSH-${parsed.host}:${parsed.port}"
+                            if (name.isBlank() || name == "New Profile" || name == "Custom Profile") {
+                                name = parsed.name ?: "SSH-${parsed.host}:${parsed.port}"
+                            }
                         } else {
                             server = input
                         }
@@ -178,16 +181,19 @@ fun ProfileEditScreen(
                         server = input
                     }
                 },
-                label = { Text("Server Host / IP (or target format)") },
-                modifier = Modifier.weight(2f).testTag("edit_server_host"),
+                label = { Text("Server Host / Target", maxLines = 1) },
+                placeholder = { Text("e.g. host:port@user:pass", maxLines = 1) },
+                singleLine = true,
+                modifier = Modifier.weight(1f).testTag("edit_server_host"),
                 shape = RoundedCornerShape(12.dp)
             )
 
             OutlinedTextField(
                 value = portText,
                 onValueChange = { portText = it },
-                label = { Text("Port") },
-                modifier = Modifier.weight(1f).testTag("edit_server_port"),
+                label = { Text("Port", maxLines = 1) },
+                singleLine = true,
+                modifier = Modifier.width(96.dp).testTag("edit_server_port"),
                 shape = RoundedCornerShape(12.dp)
             )
         }
@@ -218,12 +224,10 @@ fun ProfileEditScreen(
                             FilterChip(
                                 selected = sshMode == mode,
                                 onClick = { sshMode = mode },
-                                label = { Text(mode.displayName) },
-                                leadingIcon = {
+                                label = {
                                     Text(
-                                        text = mode.badge,
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = if (sshMode == mode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = "${mode.badge}  ${mode.displayName}",
+                                        style = MaterialTheme.typography.labelMedium
                                     )
                                 }
                             )
@@ -244,7 +248,8 @@ fun ProfileEditScreen(
                     OutlinedTextField(
                         value = sshUser,
                         onValueChange = { sshUser = it },
-                        label = { Text("SSH Username") },
+                        label = { Text("SSH Username", maxLines = 1) },
+                        singleLine = true,
                         modifier = Modifier.fillMaxWidth().testTag("edit_ssh_user"),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -274,7 +279,8 @@ fun ProfileEditScreen(
                         OutlinedTextField(
                             value = password,
                             onValueChange = { password = it },
-                            label = { Text("SSH Password") },
+                            label = { Text("SSH Password", maxLines = 1) },
+                            singleLine = true,
                             modifier = Modifier.fillMaxWidth().testTag("edit_ssh_password"),
                             shape = RoundedCornerShape(12.dp)
                         )

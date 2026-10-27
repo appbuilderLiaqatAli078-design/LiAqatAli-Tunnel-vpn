@@ -45,10 +45,11 @@ object PayloadInjector {
             .replace("[reverse_proxy]", "X-Forwarded-For: 127.0.0.1\r\nX-Real-IP: 127.0.0.1", ignoreCase = true)
             .replace("[raw]", "", ignoreCase = true)
 
-        if (!result.contains("[split]", ignoreCase = true) && !result.endsWith("\r\n\r\n")) {
-            result += if (result.endsWith("\r\n")) "\r\n" else "\r\n\r\n"
+        var cleaned = result.trimEnd(' ', '\t')
+        if (!cleaned.contains("[split]", ignoreCase = true) && !cleaned.endsWith("\r\n\r\n")) {
+            cleaned += if (cleaned.endsWith("\r\n")) "\r\n" else "\r\n\r\n"
         }
-        return result
+        return cleaned
     }
 
     fun injectAndConnect(
@@ -60,7 +61,8 @@ object PayloadInjector {
         payload: String,
         proxyUser: String = "",
         proxyPass: String = "",
-        timeoutMs: Int = 12000
+        timeoutMs: Int = 30000,
+        onConnected: ((Socket) -> Unit)? = null
     ): Socket {
         val connectHost = if (proxyHost.isNotBlank() && proxyPort > 0) proxyHost else targetHost
         val connectPort = if (proxyHost.isNotBlank() && proxyPort > 0) proxyPort else targetPort
@@ -68,6 +70,7 @@ object PayloadInjector {
         if (!socket.isConnected) {
             AppLogger.i(TAG, "Connecting socket to $connectHost:$connectPort (timeout: ${timeoutMs}ms)")
             socket.connect(InetSocketAddress(connectHost, connectPort), timeoutMs)
+            onConnected?.invoke(socket)
         }
         socket.soTimeout = timeoutMs
 
@@ -86,14 +89,15 @@ object PayloadInjector {
                     }
                 }
             } else {
-                AppLogger.i(TAG, "Injecting HTTP payload into upstream stream (exact single transmission)")
+                val printable = formatted.replace("\r", "\\r").replace("\n", "\\n")
+                AppLogger.i(TAG, "Injecting HTTP payload into upstream stream ($printable)")
                 output.write(formatted.toByteArray(Charsets.UTF_8))
                 output.flush()
             }
 
             // CRITICAL: Read and consume the HTTP response headers
             // so the socket stream is cleanly positioned for SSH handshake without desynchronization.
-            AppLogger.i(TAG, "Awaiting HTTP transport response from $connectHost:$connectPort...")
+            AppLogger.i(TAG, "Awaiting HTTP transport response from $connectHost:$connectPort (read timeout: ${timeoutMs}ms)...")
             val input: InputStream = socket.getInputStream()
             var statusLine: String? = null
             for (i in 0..5) {
@@ -121,7 +125,7 @@ object PayloadInjector {
             AppLogger.i(TAG, "HTTP transport handshake verified ($statusLine). Consumed headers cleanly.")
 
             socket.soTimeout = 0
-            return UpgradedSocket(socket, socket.getInputStream())
+            return socket
         }
 
         socket.soTimeout = 0

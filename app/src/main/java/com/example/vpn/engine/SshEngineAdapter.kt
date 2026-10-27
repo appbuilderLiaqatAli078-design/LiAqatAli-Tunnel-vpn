@@ -92,7 +92,7 @@ class SshEngineAdapter : VpnEngineAdapter {
             session.serverAliveCountMax = 3
 
             AppLogger.i(TAG, "Connecting SSH session (handshake and authentication)...")
-            session.connect(15000)
+            session.connect(30000)
 
             if (!session.isConnected) {
                 AppLogger.e(TAG, "SSH session connection failed")

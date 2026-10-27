@@ -295,6 +295,19 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun testPayloadInjectorWithSpacesAndTrailingWhitespace() {
+        val payload = "GET   / HTTP/1.1 [crlf]Host: geeksvpn.kevintechtutorials.fun[crlf]Upgrade: websocket[crlf][crlf] "
+        val formatted = PayloadInjector.formatPayload(
+            rawTemplate = payload,
+            targetHost = "www.openx.com",
+            targetPort = 80
+        )
+        assertTrue(formatted.startsWith("GET   / HTTP/1.1 \r\nHost: geeksvpn.kevintechtutorials.fun\r\nUpgrade: websocket\r\n\r\n"))
+        assertTrue(formatted.endsWith("\r\n\r\n"))
+        assertFalse(formatted.contains("[crlf]"))
+    }
+
+    @Test
     fun testEmptyPayloadDoesNotSendConnectInDirectMode() {
         val formatted = PayloadInjector.formatPayload(
             rawTemplate = "",
@@ -318,7 +331,8 @@ class ExampleUnitTest {
             targetPort = parsed.port,
             proxyHost = "",
             proxyPort = 0,
-            payload = payload
+            payload = payload,
+            timeoutMs = 30000
         )
 
         val jsch = com.jcraft.jsch.JSch()
@@ -336,7 +350,7 @@ class ExampleUnitTest {
         })
 
         try {
-            session.connect(10000)
+            session.connect(30000)
             println("SESSION CONNECTED: " + session.isConnected + ", serverVersion: " + session.serverVersion)
             session.disconnect()
         } catch (e: Exception) {

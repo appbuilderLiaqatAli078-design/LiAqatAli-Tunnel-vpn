@@ -14,15 +14,23 @@ import java.net.Socket
 class SshSocketFactory(
     private val profile: VpnProfile,
     private val vpnService: AegisVpnService,
-    private val timeoutMs: Int = 12000
+    private val timeoutMs: Int = 30000
 ) : SocketFactory {
 
     private val TAG = "SshSocketFactory"
 
     override fun createSocket(host: String, port: Int): Socket {
-        val rawSocket = Socket()
-        AppLogger.i(TAG, "Protecting upstream SSH socket with VpnService.protect()")
-        vpnService.protect(rawSocket)
+        val rawSocket = try {
+            java.nio.channels.SocketChannel.open().socket()
+        } catch (e: Exception) {
+            Socket()
+        }
+        val isProtected = try {
+            vpnService.protect(rawSocket)
+        } catch (e: Exception) {
+            false
+        }
+        AppLogger.i(TAG, "Protecting upstream SSH socket with VpnService.protect(): success=$isProtected")
 
         val sniHost = profile.sshSni.ifBlank { profile.sni.ifBlank { host } }
         val hostHeader = sniHost.ifBlank { "$host:$port" }
@@ -41,10 +49,12 @@ class SshSocketFactory(
                         payload = profile.sshPayload,
                         proxyUser = profile.sshProxyUser,
                         proxyPass = profile.sshProxyPass,
-                        timeoutMs = timeoutMs
+                        timeoutMs = timeoutMs,
+                        onConnected = { vpnService.protect(it) }
                     )
                 } else {
                     rawSocket.connect(InetSocketAddress(host, port), timeoutMs)
+                    try { vpnService.protect(rawSocket) } catch (ignored: Exception) {}
                     rawSocket
                 }
             }
@@ -63,6 +73,7 @@ class SshSocketFactory(
                     customHeaders = profile.sshCustomHeaders,
                     timeoutMs = timeoutMs
                 )
+                try { vpnService.protect(rawSocket) } catch (ignored: Exception) {}
                 rawSocket
             }
 
@@ -76,7 +87,8 @@ class SshSocketFactory(
                     payload = profile.sshPayload,
                     proxyUser = profile.sshProxyUser,
                     proxyPass = profile.sshProxyPass,
-                    timeoutMs = timeoutMs
+                    timeoutMs = timeoutMs,
+                    onConnected = { vpnService.protect(it) }
                 )
             }
 
