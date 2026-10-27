@@ -197,6 +197,14 @@ class AegisVpnService : VpnService() {
                     AppLogger.w(TAG, "Cannot include package $pkg: ${e.message}")
                 }
             }
+        } else {
+            // Prevent routing loops: exclude VPN service's own process from TUN device
+            try {
+                builder.addDisallowedApplication(packageName)
+                AppLogger.d(TAG, "Disallowed self package $packageName from TUN routing to prevent loops")
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Could not disallow self package: ${e.message}")
+            }
         }
 
         // Configure underlying networks if available

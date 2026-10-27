@@ -94,6 +94,7 @@ object ConfigParser {
         val sid = queryParams["sid"] ?: ""
         val fp = queryParams["fp"] ?: "chrome"
         val alpn = queryParams["alpn"] ?: ""
+        val flow = queryParams["flow"] ?: ""
 
         val profile = VpnProfile(
             id = UUID.randomUUID().toString(),
@@ -109,7 +110,8 @@ object ConfigParser {
             publicKey = pbk,
             shortId = sid,
             fingerprint = fp,
-            alpn = alpn
+            alpn = alpn,
+            flow = flow
         )
         return ParseResult.Success(profile)
     }
@@ -251,7 +253,8 @@ object ConfigParser {
                     sshUsername = root.optString("sshUsername", ""),
                     sshPayload = root.optString("sshPayload", ""),
                     proxyHost = root.optString("proxyHost", ""),
-                    proxyPort = root.optInt("proxyPort", 0)
+                    proxyPort = root.optInt("proxyPort", 0),
+                    flow = root.optString("flow", "")
                 )
             )
         }
@@ -320,7 +323,8 @@ object ConfigParser {
     fun exportProfileToUri(profile: VpnProfile): String {
         return when (profile.protocol) {
             ProtocolType.VLESS -> {
-                "vless://${profile.password}@${profile.server}:${profile.port}?security=${profile.security}&type=${profile.network}&sni=${profile.sni}&path=${profile.path}#${Uri.encode(profile.name)}"
+                val flowParam = if (profile.flow.isNotBlank()) "&flow=${profile.flow}" else ""
+                "vless://${profile.password}@${profile.server}:${profile.port}?security=${profile.security}&type=${profile.network}&sni=${profile.sni}&path=${profile.path}$flowParam#${Uri.encode(profile.name)}"
             }
             ProtocolType.TROJAN -> {
                 "trojan://${profile.password}@${profile.server}:${profile.port}?sni=${profile.sni}#${Uri.encode(profile.name)}"
@@ -371,6 +375,7 @@ object ConfigParser {
             put("dnsPrimary", profile.dnsPrimary)
             put("dnsSecondary", profile.dnsSecondary)
             put("blockIpv6", profile.blockIpv6)
+            put("flow", profile.flow)
         }
         return obj.toString(2)
     }

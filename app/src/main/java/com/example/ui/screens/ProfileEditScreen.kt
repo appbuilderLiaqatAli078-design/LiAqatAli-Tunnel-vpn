@@ -67,6 +67,7 @@ fun ProfileEditScreen(
     var sni by remember { mutableStateOf(initialProfile?.sni ?: "") }
     var path by remember { mutableStateOf(initialProfile?.path ?: "") }
     var pbk by remember { mutableStateOf(initialProfile?.publicKey ?: "") }
+    var flow by remember { mutableStateOf(initialProfile?.flow ?: "") }
 
     // SSH Specific
     var sshUser by remember { mutableStateOf(initialProfile?.sshUsername ?: "root") }
@@ -292,6 +293,16 @@ fun ProfileEditScreen(
                             shape = RoundedCornerShape(12.dp)
                         )
                     }
+
+                    if (protocol == ProtocolType.VLESS) {
+                        OutlinedTextField(
+                            value = flow,
+                            onValueChange = { flow = it },
+                            label = { Text("Flow (e.g. xtls-rprx-vision)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
                 }
             }
         }
@@ -453,7 +464,8 @@ fun ProfileEditScreen(
                         dnsPrimary = dnsPrimary,
                         blockIpv6 = blockIpv6,
                         perAppProxy = perAppProxy,
-                        selectedApps = apps
+                        selectedApps = apps,
+                        flow = flow.trim()
                     )
 
                     onSaveProfile(updated)

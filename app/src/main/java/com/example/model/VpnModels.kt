@@ -72,6 +72,7 @@ data class VpnProfile(
     val shortId: String = "",
     val fingerprint: String = "chrome",
     val alpn: String = "h2,http/1.1",
+    val flow: String = "",
     // SSH Specific
     val sshUsername: String = "",
     val sshPayload: String = "", // e.g. CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf][crlf]

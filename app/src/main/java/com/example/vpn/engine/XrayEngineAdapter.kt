@@ -33,9 +33,8 @@ class XrayEngineAdapter : VpnEngineAdapter {
             AppLogger.i(TAG, "Preparing Xray Core environment and assets")
             setupAssets(vpnService)
 
-            val cachePath = vpnService.cacheDir.absolutePath
             val assetPath = vpnService.filesDir.absolutePath
-            Libv2ray.initCoreEnv(assetPath, cachePath)
+            Libv2ray.initCoreEnv(assetPath, "")
 
             val configJson = buildXrayConfig(profile, localSocksPort)
             AppLogger.i(TAG, "Generated Xray configuration for protocol: ${profile.protocol.displayName} (port $localSocksPort)")
@@ -171,6 +170,9 @@ class XrayEngineAdapter : VpnEngineAdapter {
                             val users = JSONArray().put(JSONObject().apply {
                                 put("id", profile.password)
                                 put("encryption", "none")
+                                if (profile.flow.isNotBlank()) {
+                                    put("flow", profile.flow)
+                                }
                             })
                             put("users", users)
                         }
