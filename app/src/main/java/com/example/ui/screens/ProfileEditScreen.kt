@@ -77,6 +77,8 @@ fun ProfileEditScreen(
     // DNS & IPv6
     var dnsPrimary by remember { mutableStateOf(initialProfile?.dnsPrimary ?: "1.1.1.1") }
     var blockIpv6 by remember { mutableStateOf(initialProfile?.blockIpv6 ?: true) }
+    var perAppProxy by remember { mutableStateOf(initialProfile?.perAppProxy ?: false) }
+    var selectedAppsText by remember { mutableStateOf(initialProfile?.selectedApps?.joinToString(", ") ?: "") }
 
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -316,7 +318,7 @@ fun ProfileEditScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text("Block IPv6 Leaks", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
                         Text("Prevent traffic leaking outside tunnel", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -324,6 +326,66 @@ fun ProfileEditScreen(
                         checked = blockIpv6,
                         onCheckedChange = { blockIpv6 = it }
                     )
+                }
+            }
+        }
+
+        // Split Tunneling Card
+        GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Per-App Split Tunneling", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+                        Text("Route only selected applications through the VPN", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = perAppProxy,
+                        onCheckedChange = { perAppProxy = it }
+                    )
+                }
+
+                if (perAppProxy) {
+                    OutlinedTextField(
+                        value = selectedAppsText,
+                        onValueChange = { selectedAppsText = it },
+                        label = { Text("Allowed Packages (comma-separated)") },
+                        placeholder = { Text("com.android.chrome, org.telegram.messenger") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    Text(
+                        text = "Quick Presets:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            "Chrome" to "com.android.chrome",
+                            "Firefox" to "org.mozilla.firefox",
+                            "Telegram" to "org.telegram.messenger",
+                            "WhatsApp" to "com.whatsapp"
+                        ).forEach { (label, pkg) ->
+                            AssistChip(
+                                onClick = {
+                                    val current = selectedAppsText.split(",")
+                                        .map { it.trim() }
+                                        .filter { it.isNotBlank() }
+                                        .toMutableSet()
+                                    current.add(pkg)
+                                    selectedAppsText = current.joinToString(", ")
+                                },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -361,6 +423,12 @@ fun ProfileEditScreen(
                         return@Button
                     }
 
+                    val apps = if (perAppProxy) {
+                        selectedAppsText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    } else {
+                        emptyList()
+                    }
+
                     val updated = (initialProfile ?: VpnProfile(
                         id = UUID.randomUUID().toString(),
                         name = name.ifBlank { "Tunnel-$server:$port" },
@@ -383,7 +451,9 @@ fun ProfileEditScreen(
                         proxyHost = proxyHost,
                         proxyPort = proxyPortText.toIntOrNull() ?: 0,
                         dnsPrimary = dnsPrimary,
-                        blockIpv6 = blockIpv6
+                        blockIpv6 = blockIpv6,
+                        perAppProxy = perAppProxy,
+                        selectedApps = apps
                     )
 
                     onSaveProfile(updated)

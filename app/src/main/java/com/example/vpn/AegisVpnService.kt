@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -72,6 +73,7 @@ class AegisVpnService : VpnService() {
             ACTION_CONNECT -> {
                 val profileId = intent.getStringExtra(EXTRA_PROFILE_ID)
                 AppLogger.i(TAG, "Received ACTION_CONNECT for profileId: $profileId")
+                promoteToForeground("Initializing VPN tunnel...", false)
                 startConnectionFlow()
             }
             ACTION_DISCONNECT -> {
@@ -87,6 +89,7 @@ class AegisVpnService : VpnService() {
         if (profile == null) {
             AppLogger.e(TAG, "Cannot connect: activeProfile is null")
             _vpnState.value = VpnState.Error("No profile selected for connection", "ERR_NO_PROFILE")
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
@@ -96,7 +99,7 @@ class AegisVpnService : VpnService() {
             try {
                 activeProfileData = profile
                 _vpnState.value = VpnState.Validating("Validating server ${profile.server}:${profile.port}")
-                startForeground(NOTIFICATION_ID, buildNotification("Validating connection...", false))
+                updateNotification("Validating connection...", false)
 
                 // Basic address / port validation
                 if (profile.server.isBlank() || profile.port !in 1..65535) {
@@ -330,6 +333,29 @@ class AegisVpnService : VpnService() {
         }
 
         return builder.build()
+    }
+
+    private fun promoteToForeground(statusText: String, isConnected: Boolean) {
+        val notification = buildNotification(statusText, isConnected)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Failed startForeground: ${e.message}", e)
+        }
     }
 
     private fun updateNotification(statusText: String, isConnected: Boolean) {

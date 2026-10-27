@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -150,42 +152,35 @@ fun MainAppContent(viewModel: VpnViewModel) {
                         selected = currentTab == ScreenTab.HOME,
                         onClick = { currentTab = ScreenTab.HOME },
                         icon = { Icon(Icons.Default.Shield, contentDescription = "Home") },
-                        label = { Text("Home") },
+                        label = { Text("Home", style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false) },
                         modifier = Modifier.testTag("tab_home")
                     )
                     NavigationBarItem(
                         selected = currentTab == ScreenTab.PROFILES,
                         onClick = { currentTab = ScreenTab.PROFILES },
                         icon = { Icon(Icons.Default.Layers, contentDescription = "Profiles") },
-                        label = { Text("Profiles") },
+                        label = { Text("Profiles", style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false) },
                         modifier = Modifier.testTag("tab_profiles")
-                    )
-                    NavigationBarItem(
-                        selected = currentTab == ScreenTab.DETAILS,
-                        onClick = { currentTab = ScreenTab.DETAILS },
-                        icon = { Icon(Icons.Default.Speed, contentDescription = "Diagnostics") },
-                        label = { Text("Telemetry") },
-                        modifier = Modifier.testTag("tab_details")
                     )
                     NavigationBarItem(
                         selected = currentTab == ScreenTab.DNS,
                         onClick = { currentTab = ScreenTab.DNS },
                         icon = { Icon(Icons.Default.Dns, contentDescription = "DNS & Routing") },
-                        label = { Text("DNS") },
+                        label = { Text("DNS", style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false) },
                         modifier = Modifier.testTag("tab_dns")
                     )
                     NavigationBarItem(
                         selected = currentTab == ScreenTab.LOGS,
                         onClick = { currentTab = ScreenTab.LOGS },
                         icon = { Icon(Icons.Default.Terminal, contentDescription = "Logs") },
-                        label = { Text("Logs") },
+                        label = { Text("Logs", style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false) },
                         modifier = Modifier.testTag("tab_logs")
                     )
                     NavigationBarItem(
                         selected = currentTab == ScreenTab.SETTINGS,
                         onClick = { currentTab = ScreenTab.SETTINGS },
                         icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                        label = { Text("Settings") },
+                        label = { Text("Settings", style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false) },
                         modifier = Modifier.testTag("tab_settings")
                     )
                 }
@@ -199,7 +194,7 @@ fun MainAppContent(viewModel: VpnViewModel) {
         ) {
             when {
                 isImporting -> {
-                    androidx.activity.compose.BackHandler { isImporting = false }
+                    BackHandler { isImporting = false }
                     ImportScreen(
                         viewModel = viewModel,
                         onImportSuccess = {
@@ -209,7 +204,7 @@ fun MainAppContent(viewModel: VpnViewModel) {
                     )
                 }
                 editingProfile != null || isCreatingNew -> {
-                    androidx.activity.compose.BackHandler {
+                    BackHandler {
                         editingProfile = null
                         isCreatingNew = false
                     }
@@ -237,6 +232,7 @@ fun MainAppContent(viewModel: VpnViewModel) {
                     )
                 }
                 currentTab == ScreenTab.PROFILES -> {
+                    BackHandler { currentTab = ScreenTab.HOME }
                     ProfilesScreen(
                         viewModel = viewModel,
                         onEditProfile = { profile -> editingProfile = profile },
@@ -249,16 +245,26 @@ fun MainAppContent(viewModel: VpnViewModel) {
                     )
                 }
                 currentTab == ScreenTab.DETAILS -> {
-                    ConnectionDetailsScreen(viewModel = viewModel)
+                    BackHandler { currentTab = ScreenTab.HOME }
+                    ConnectionDetailsScreen(
+                        viewModel = viewModel,
+                        onNavigateBack = { currentTab = ScreenTab.HOME }
+                    )
                 }
                 currentTab == ScreenTab.DNS -> {
+                    BackHandler { currentTab = ScreenTab.HOME }
                     DnsRoutingScreen(viewModel = viewModel)
                 }
                 currentTab == ScreenTab.LOGS -> {
+                    BackHandler { currentTab = ScreenTab.HOME }
                     LogsScreen(viewModel = viewModel)
                 }
                 currentTab == ScreenTab.SETTINGS -> {
-                    SettingsScreen(viewModel = viewModel)
+                    BackHandler { currentTab = ScreenTab.HOME }
+                    SettingsScreen(
+                        viewModel = viewModel,
+                        onNavigateToDns = { currentTab = ScreenTab.DNS }
+                    )
                 }
             }
         }

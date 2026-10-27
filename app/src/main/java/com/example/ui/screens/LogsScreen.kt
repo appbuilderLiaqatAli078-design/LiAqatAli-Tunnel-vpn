@@ -229,7 +229,8 @@ fun LogsScreen(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp
                                 ),
-                                color = Color(0xFFE2E8F0)
+                                color = Color(0xFFE2E8F0),
+                                modifier = Modifier.weight(1f)
                             )
                         }
                     }

@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,6 +48,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.model.VpnProfile
 import com.example.parser.ConfigParser
@@ -83,6 +87,23 @@ fun ImportScreen(
         }
     }
 
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val content = stream.bufferedReader().readText()
+                    inputText = content
+                    validateAndParse(content)
+                }
+            } catch (e: Exception) {
+                statusMessage = "Error reading file: ${e.message}"
+                isSuccess = false
+            }
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -97,29 +118,45 @@ fun ImportScreen(
         )
 
         Text(
-            text = "Import configs from clipboard or paste standard vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON configurations.",
+            text = "Import configs from file, clipboard, or paste standard vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON configurations.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // Paste from clipboard button
-        OutlinedButton(
-            onClick = {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                val clip = clipboard.primaryClip
-                if (clip != null && clip.itemCount > 0) {
-                    val pasted = clip.getItemAt(0).text?.toString() ?: ""
-                    inputText = pasted
-                    validateAndParse(pasted)
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("paste_clipboard_button")
+        // Actions: Clipboard + Choose File
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Paste from Clipboard")
+            OutlinedButton(
+                onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = clipboard.primaryClip
+                    if (clip != null && clip.itemCount > 0) {
+                        val pasted = clip.getItemAt(0).text?.toString() ?: ""
+                        inputText = pasted
+                        validateAndParse(pasted)
+                    }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("paste_clipboard_button")
+            ) {
+                Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Clipboard", maxLines = 1)
+            }
+
+            OutlinedButton(
+                onClick = { filePickerLauncher.launch("*/*") },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("pick_file_button")
+            ) {
+                Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Choose File", maxLines = 1)
+            }
         }
 
         // Configuration Text Area
@@ -162,22 +199,28 @@ fun ImportScreen(
                         tint = if (isSuccess) ConnectedGreen else DisconnectedRed,
                         modifier = Modifier.size(24.dp)
                     )
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = if (isSuccess) "Configuration Valid" else "Validation Error",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                            color = if (isSuccess) ConnectedGreen else DisconnectedRed
+                            color = if (isSuccess) ConnectedGreen else DisconnectedRed,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = statusMessage ?: "",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
                         )
                         if (parsedProfile != null) {
                             Text(
                                 text = "Target: ${parsedProfile?.server}:${parsedProfile?.port} (${parsedProfile?.protocol?.displayName})",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -211,7 +254,7 @@ fun ImportScreen(
             }, label = { Text("SSH") })
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Save Button
         Button(
