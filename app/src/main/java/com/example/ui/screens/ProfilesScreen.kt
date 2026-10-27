@@ -271,7 +271,7 @@ fun ProfileItemCard(
                             color = Color(profile.protocol.badgeColorHex).copy(alpha = 0.15f)
                         ) {
                             Text(
-                                text = profile.protocol.displayName,
+                                text = if (profile.protocol == ProtocolType.SSH) "SSH • ${profile.sshMode.badge}" else profile.protocol.displayName,
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = Color(profile.protocol.badgeColorHex),
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)

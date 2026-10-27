@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -16,6 +17,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Terminal
@@ -31,7 +34,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,6 +45,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.model.ProtocolType
+import com.example.model.SshTunnelMode
 import com.example.model.VpnProfile
 import com.example.ui.components.GlassCard
 import com.example.ui.theme.CyanPrimaryDark
@@ -69,11 +72,28 @@ fun ProfileEditScreen(
     var pbk by remember { mutableStateOf(initialProfile?.publicKey ?: "") }
     var flow by remember { mutableStateOf(initialProfile?.flow ?: "") }
 
-    // SSH Specific
+    // SSH Specific State
+    var sshMode by remember { mutableStateOf(initialProfile?.sshMode ?: SshTunnelMode.DIRECT) }
+    var sshAuthType by remember { mutableStateOf(if (initialProfile?.sshPrivateKey?.isNotBlank() == true) "key" else "password") }
     var sshUser by remember { mutableStateOf(initialProfile?.sshUsername ?: "root") }
+    var sshPrivateKey by remember { mutableStateOf(initialProfile?.sshPrivateKey ?: "") }
+    var sshPassphrase by remember { mutableStateOf(initialProfile?.sshPassphrase ?: "") }
     var sshPayload by remember { mutableStateOf(initialProfile?.sshPayload ?: "") }
     var proxyHost by remember { mutableStateOf(initialProfile?.proxyHost ?: "") }
     var proxyPortText by remember { mutableStateOf(initialProfile?.proxyPort?.let { if (it > 0) it.toString() else "" } ?: "") }
+    var sshProxyUser by remember { mutableStateOf(initialProfile?.sshProxyUser ?: "") }
+    var sshProxyPass by remember { mutableStateOf(initialProfile?.sshProxyPass ?: "") }
+    var sshSni by remember { mutableStateOf(initialProfile?.sshSni ?: "") }
+    var sshWsPath by remember { mutableStateOf(initialProfile?.sshWsPath ?: "/ssh") }
+    var sshCustomHeaders by remember { mutableStateOf(initialProfile?.sshCustomHeaders ?: "") }
+    var sshChainProxyHost by remember { mutableStateOf(initialProfile?.sshChainProxyHost ?: "") }
+    var sshChainProxyPortText by remember { mutableStateOf(initialProfile?.sshChainProxyPort?.let { if (it > 0) it.toString() else "" } ?: "") }
+    var sshChainProxyType by remember { mutableStateOf(initialProfile?.sshChainProxyType ?: "SOCKS5") }
+    var sshLocalForwardPortText by remember { mutableStateOf(initialProfile?.sshLocalForwardPort?.toString() ?: "10880") }
+    var sshRemoteForwardHost by remember { mutableStateOf(initialProfile?.sshRemoteForwardHost ?: "127.0.0.1") }
+    var sshRemoteForwardPortText by remember { mutableStateOf(initialProfile?.sshRemoteForwardPort?.toString() ?: "80") }
+    var sshRemoteListenPortText by remember { mutableStateOf(initialProfile?.sshRemoteListenPort?.toString() ?: "8080") }
+    var allowInsecureSsl by remember { mutableStateOf(initialProfile?.allowInsecureSsl ?: false) }
 
     // DNS & IPv6
     var dnsPrimary by remember { mutableStateOf(initialProfile?.dnsPrimary ?: "1.1.1.1") }
@@ -96,7 +116,7 @@ fun ProfileEditScreen(
             color = MaterialTheme.colorScheme.onBackground
         )
 
-        // Protocol selector chips
+        // Protocol Selector
         Text(
             text = "Protocol Engine",
             style = MaterialTheme.typography.labelLarge,
@@ -156,12 +176,51 @@ fun ProfileEditScreen(
             )
         }
 
-        // SSH Specific Fields
+        // SSH Specific Configuration
         if (protocol == ProtocolType.SSH) {
+            // SSH Mode Selector
+            GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "SSH Tunnel Mode",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = sshMode.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SshTunnelMode.values().forEach { mode ->
+                            FilterChip(
+                                selected = sshMode == mode,
+                                onClick = { sshMode = mode },
+                                label = { Text(mode.displayName) },
+                                leadingIcon = {
+                                    Text(
+                                        text = mode.badge,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = if (sshMode == mode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // SSH Credentials Card
             GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "SSH Credentials & Injector Settings",
+                        text = "SSH Authentication",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -174,57 +233,437 @@ fun ProfileEditScreen(
                         shape = RoundedCornerShape(12.dp)
                     )
 
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = { Text("SSH Password / Private Key") },
-                        modifier = Modifier.fillMaxWidth().testTag("edit_ssh_password"),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-
-                    Text(
-                        text = "Custom HTTP Injector Payload (Optional):",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    OutlinedTextField(
-                        value = sshPayload,
-                        onValueChange = { sshPayload = it },
-                        placeholder = { Text("CONNECT [host_port] HTTP/1.1[crlf]Host: bug.isp.com[crlf]...") },
-                        modifier = Modifier.fillMaxWidth().height(100.dp).testTag("edit_ssh_payload"),
-                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-
-                    // Helper macro chips
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("[host]", "[port]", "[host_port]", "[crlf]", "[protocol]", "[ua]").forEach { tag ->
-                            AssistChip(
-                                onClick = { sshPayload += tag },
-                                label = { Text(tag) }
-                            )
-                        }
-                    }
-
+                    // Auth Type Toggle
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        FilterChip(
+                            selected = sshAuthType == "password",
+                            onClick = { sshAuthType = "password" },
+                            label = { Text("Password Auth") },
+                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = sshAuthType == "key",
+                            onClick = { sshAuthType = "key" },
+                            label = { Text("Private Key Auth") },
+                            leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    if (sshAuthType == "password") {
                         OutlinedTextField(
-                            value = proxyHost,
-                            onValueChange = { proxyHost = it },
-                            label = { Text("Remote Proxy IP (Opt)") },
-                            modifier = Modifier.weight(2f),
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("SSH Password") },
+                            modifier = Modifier.fillMaxWidth().testTag("edit_ssh_password"),
                             shape = RoundedCornerShape(12.dp)
                         )
+                    } else {
                         OutlinedTextField(
-                            value = proxyPortText,
-                            onValueChange = { proxyPortText = it },
-                            label = { Text("Proxy Port") },
-                            modifier = Modifier.weight(1f),
+                            value = sshPrivateKey,
+                            onValueChange = { sshPrivateKey = it },
+                            label = { Text("Private Key (PEM / OpenSSH format)") },
+                            placeholder = { Text("-----BEGIN OPENSSH PRIVATE KEY-----\n...") },
+                            modifier = Modifier.fillMaxWidth().height(120.dp),
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                             shape = RoundedCornerShape(12.dp)
                         )
+
+                        OutlinedTextField(
+                            value = sshPassphrase,
+                            onValueChange = { sshPassphrase = it },
+                            label = { Text("Key Passphrase (optional)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+                }
+            }
+
+            // Mode-Specific Transport Settings Card
+            GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "${sshMode.displayName} Settings",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    when (sshMode) {
+                        SshTunnelMode.DIRECT -> {
+                            Text(
+                                text = "Standard direct connection to remote SSH daemon. Uses full-device TUN forwarding through local SOCKS5 routing.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        SshTunnelMode.HTTP_PROXY, SshTunnelMode.HTTP_CONNECT -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = proxyHost,
+                                    onValueChange = { proxyHost = it },
+                                    label = { Text("HTTP Proxy Host") },
+                                    modifier = Modifier.weight(2f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = proxyPortText,
+                                    onValueChange = { proxyPortText = it },
+                                    label = { Text("Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = sshProxyUser,
+                                    onValueChange = { sshProxyUser = it },
+                                    label = { Text("Proxy User (Opt)") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = sshProxyPass,
+                                    onValueChange = { sshProxyPass = it },
+                                    label = { Text("Proxy Pass (Opt)") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            OutlinedTextField(
+                                value = sshCustomHeaders,
+                                onValueChange = { sshCustomHeaders = it },
+                                label = { Text("Custom HTTP Headers (Header: Value per line)") },
+                                placeholder = { Text("X-Online-Host: bug.isp.com\nX-Forward-Host: bug.isp.com") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
+
+                        SshTunnelMode.CUSTOM_PAYLOAD -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = proxyHost,
+                                    onValueChange = { proxyHost = it },
+                                    label = { Text("Remote Proxy Host (Opt)") },
+                                    modifier = Modifier.weight(2f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = proxyPortText,
+                                    onValueChange = { proxyPortText = it },
+                                    label = { Text("Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            OutlinedTextField(
+                                value = sshPayload,
+                                onValueChange = { sshPayload = it },
+                                label = { Text("Custom HTTP Injector Payload") },
+                                placeholder = { Text("CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf]...") },
+                                modifier = Modifier.fillMaxWidth().height(100.dp).testTag("edit_ssh_payload"),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("[host]", "[port]", "[host_port]", "[method]", "[protocol]", "[crlf]", "[auth]", "[split]", "[ua]", "[reverse_proxy]").forEach { tag ->
+                                    AssistChip(
+                                        onClick = { sshPayload += tag },
+                                        label = { Text(tag) }
+                                    )
+                                }
+                            }
+                        }
+
+                        SshTunnelMode.SSL_TLS -> {
+                            OutlinedTextField(
+                                value = sshSni,
+                                onValueChange = { sshSni = it },
+                                label = { Text("TLS SNI / ServerName (e.g. cloudflare.com)") },
+                                placeholder = { Text(server.ifBlank { "example.com" }) },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Allow Insecure SSL Certificates", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+                                    Text("Permit self-signed certificates without verification", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(checked = allowInsecureSsl, onCheckedChange = { allowInsecureSsl = it })
+                            }
+                        }
+
+                        SshTunnelMode.WEBSOCKET -> {
+                            OutlinedTextField(
+                                value = sshWsPath,
+                                onValueChange = { sshWsPath = it },
+                                label = { Text("WebSocket Path (e.g. /ssh or /ws)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            OutlinedTextField(
+                                value = sshCustomHeaders,
+                                onValueChange = { sshCustomHeaders = it },
+                                label = { Text("Extra WebSocket Headers (Header: Value per line)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
+
+                        SshTunnelMode.SECURE_WEBSOCKET, SshTunnelMode.SSL_WEBSOCKET -> {
+                            OutlinedTextField(
+                                value = sshSni,
+                                onValueChange = { sshSni = it },
+                                label = { Text("TLS SNI Host (e.g. cdn.domain.com)") },
+                                placeholder = { Text(server.ifBlank { "example.com" }) },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            OutlinedTextField(
+                                value = sshWsPath,
+                                onValueChange = { sshWsPath = it },
+                                label = { Text("WebSocket Path (e.g. /ssh or /ws)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            OutlinedTextField(
+                                value = sshCustomHeaders,
+                                onValueChange = { sshCustomHeaders = it },
+                                label = { Text("Custom Headers (Header: Value)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Allow Insecure SSL Certificates", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+                                    Text("Permit self-signed or unverified SSL chains", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(checked = allowInsecureSsl, onCheckedChange = { allowInsecureSsl = it })
+                            }
+                        }
+
+                        SshTunnelMode.SOCKS4 -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = proxyHost,
+                                    onValueChange = { proxyHost = it },
+                                    label = { Text("SOCKS4 Proxy Host") },
+                                    modifier = Modifier.weight(2f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = proxyPortText,
+                                    onValueChange = { proxyPortText = it },
+                                    label = { Text("Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            OutlinedTextField(
+                                value = sshProxyUser,
+                                onValueChange = { sshProxyUser = it },
+                                label = { Text("User ID (e.g. aegis)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
+
+                        SshTunnelMode.SOCKS5 -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = proxyHost,
+                                    onValueChange = { proxyHost = it },
+                                    label = { Text("SOCKS5 Proxy Host") },
+                                    modifier = Modifier.weight(2f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = proxyPortText,
+                                    onValueChange = { proxyPortText = it },
+                                    label = { Text("Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = sshProxyUser,
+                                    onValueChange = { sshProxyUser = it },
+                                    label = { Text("Username (Optional)") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = sshProxyPass,
+                                    onValueChange = { sshProxyPass = it },
+                                    label = { Text("Password (Optional)") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                        }
+
+                        SshTunnelMode.PROXY_CHAIN -> {
+                            Text(
+                                text = "Hop 1 Proxy (Initial entry node)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = proxyHost,
+                                    onValueChange = { proxyHost = it },
+                                    label = { Text("Hop 1 Host") },
+                                    modifier = Modifier.weight(2f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = proxyPortText,
+                                    onValueChange = { proxyPortText = it },
+                                    label = { Text("Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            Text(
+                                text = "Hop 2 Proxy (Intermediary node)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = sshChainProxyHost,
+                                    onValueChange = { sshChainProxyHost = it },
+                                    label = { Text("Hop 2 Host") },
+                                    modifier = Modifier.weight(2f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = sshChainProxyPortText,
+                                    onValueChange = { sshChainProxyPortText = it },
+                                    label = { Text("Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                        }
+
+                        SshTunnelMode.LOCAL_PORT_FORWARDING -> {
+                            Text(
+                                text = "Binds local port on device and forwards TCP connections over SSH direct-tcpip to remote destination.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = sshLocalForwardPortText,
+                                    onValueChange = { sshLocalForwardPortText = it },
+                                    label = { Text("Local Bound Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = sshRemoteForwardPortText,
+                                    onValueChange = { sshRemoteForwardPortText = it },
+                                    label = { Text("Remote Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            OutlinedTextField(
+                                value = sshRemoteForwardHost,
+                                onValueChange = { sshRemoteForwardHost = it },
+                                label = { Text("Remote Target Host (e.g. 127.0.0.1)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
+
+                        SshTunnelMode.REMOTE_PORT_FORWARDING -> {
+                            Text(
+                                text = "Requests remote SSH server to bind a listening port and reverse-forward incoming connections to local device target.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = sshRemoteListenPortText,
+                                    onValueChange = { sshRemoteListenPortText = it },
+                                    label = { Text("Remote Server Listen Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = sshRemoteForwardPortText,
+                                    onValueChange = { sshRemoteForwardPortText = it },
+                                    label = { Text("Local Port") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                            OutlinedTextField(
+                                value = sshRemoteForwardHost,
+                                onValueChange = { sshRemoteForwardHost = it },
+                                label = { Text("Local Target Host (e.g. 127.0.0.1)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
+
+                        SshTunnelMode.DYNAMIC_PORT_FORWARDING -> {
+                            Text(
+                                text = "Dynamic SOCKS5 proxy running on 127.0.0.1:10809. Routes all device and application TCP traffic through SSH multiplexed direct-tcpip channels.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -465,7 +904,23 @@ fun ProfileEditScreen(
                         blockIpv6 = blockIpv6,
                         perAppProxy = perAppProxy,
                         selectedApps = apps,
-                        flow = flow.trim()
+                        flow = flow.trim(),
+                        sshMode = sshMode,
+                        sshPrivateKey = if (sshAuthType == "key") sshPrivateKey.trim() else "",
+                        sshPassphrase = sshPassphrase,
+                        sshProxyUser = sshProxyUser.trim(),
+                        sshProxyPass = sshProxyPass,
+                        sshSni = sshSni.trim(),
+                        sshWsPath = sshWsPath.trim(),
+                        sshCustomHeaders = sshCustomHeaders.trim(),
+                        sshChainProxyHost = sshChainProxyHost.trim(),
+                        sshChainProxyPort = sshChainProxyPortText.toIntOrNull() ?: 0,
+                        sshChainProxyType = sshChainProxyType,
+                        sshLocalForwardPort = sshLocalForwardPortText.toIntOrNull() ?: 10880,
+                        sshRemoteForwardHost = sshRemoteForwardHost.trim().ifBlank { "127.0.0.1" },
+                        sshRemoteForwardPort = sshRemoteForwardPortText.toIntOrNull() ?: 80,
+                        sshRemoteListenPort = sshRemoteListenPortText.toIntOrNull() ?: 8080,
+                        allowInsecureSsl = allowInsecureSsl
                     )
 
                     onSaveProfile(updated)

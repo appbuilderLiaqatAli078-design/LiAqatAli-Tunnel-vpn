@@ -149,4 +149,104 @@ class ExampleUnitTest {
         assertTrue(connected.isConnected)
         assertFalse(connected.isBusy)
     }
+
+    @Test
+    fun testAllSshTunnelModesEnum() {
+        val modes = com.example.model.SshTunnelMode.values()
+        assertEquals(14, modes.size)
+        modes.forEach { mode ->
+            assertTrue(mode.displayName.isNotBlank())
+            assertTrue(mode.badge.isNotBlank())
+            assertTrue(mode.description.isNotBlank())
+        }
+    }
+
+    @Test
+    fun testSshModesUriParsing() {
+        val wssUri = "ssh://myuser:mypass@ssh.server.net:443?mode=SECURE_WEBSOCKET&sni=cdn.cloudflare.net&ws_path=/custom-ssh#CloudflareWSS"
+        val result = ConfigParser.parse(wssUri)
+
+        assertTrue(result is ParseResult.Success)
+        val profile = (result as ParseResult.Success).profile
+        assertEquals("CloudflareWSS", profile.name)
+        assertEquals(ProtocolType.SSH, profile.protocol)
+        assertEquals(com.example.model.SshTunnelMode.SECURE_WEBSOCKET, profile.sshMode)
+        assertEquals("ssh.server.net", profile.server)
+        assertEquals(443, profile.port)
+        assertEquals("myuser", profile.sshUsername)
+        assertEquals("mypass", profile.password)
+        assertEquals("cdn.cloudflare.net", profile.sshSni)
+        assertEquals("/custom-ssh", profile.sshWsPath)
+    }
+
+    @Test
+    fun testSshSocks5AndPortForwardingUriParsing() {
+        val fwdUri = "ssh://root:admin123@10.0.0.1:22?mode=LOCAL_PORT_FORWARDING&local_fwd_port=9090&remote_fwd_host=192.168.1.50&remote_fwd_port=3306#DatabaseTunnel"
+        val result = ConfigParser.parse(fwdUri)
+
+        assertTrue(result is ParseResult.Success)
+        val profile = (result as ParseResult.Success).profile
+        assertEquals(com.example.model.SshTunnelMode.LOCAL_PORT_FORWARDING, profile.sshMode)
+        assertEquals(9090, profile.sshLocalForwardPort)
+        assertEquals("192.168.1.50", profile.sshRemoteForwardHost)
+        assertEquals(3306, profile.sshRemoteForwardPort)
+    }
+
+    @Test
+    fun testSshJsonSerializationAndDeserialization() {
+        val original = VpnProfile(
+            id = UUID.randomUUID().toString(),
+            name = "SSH Pro Multi-Hop Node",
+            protocol = ProtocolType.SSH,
+            server = "ssh.node.org",
+            port = 22,
+            sshMode = com.example.model.SshTunnelMode.PROXY_CHAIN,
+            sshUsername = "pro_user",
+            sshPrivateKey = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----",
+            sshPassphrase = "passphrase-test",
+            proxyHost = "hop1.proxy.net",
+            proxyPort = 1080,
+            sshChainProxyHost = "hop2.proxy.net",
+            sshChainProxyPort = 8080,
+            sshChainProxyType = "HTTP",
+            allowInsecureSsl = true
+        )
+
+        val jsonStr = ConfigParser.exportProfileToJson(original)
+        val parseResult = ConfigParser.parse(jsonStr)
+
+        assertTrue(parseResult is ParseResult.Success)
+        val restored = (parseResult as ParseResult.Success).profile
+        assertEquals(original.name, restored.name)
+        assertEquals(original.protocol, restored.protocol)
+        assertEquals(original.sshMode, restored.sshMode)
+        assertEquals(original.sshUsername, restored.sshUsername)
+        assertEquals(original.sshPrivateKey, restored.sshPrivateKey)
+        assertEquals(original.sshPassphrase, restored.sshPassphrase)
+        assertEquals(original.proxyHost, restored.proxyHost)
+        assertEquals(original.proxyPort, restored.proxyPort)
+        assertEquals(original.sshChainProxyHost, restored.sshChainProxyHost)
+        assertEquals(original.sshChainProxyPort, restored.sshChainProxyPort)
+        assertEquals(original.sshChainProxyType, restored.sshChainProxyType)
+        assertTrue(restored.allowInsecureSsl)
+    }
+
+    @Test
+    fun testPayloadInjectorExtendedMacrosAndSplit() {
+        val template = "[method] [host_port] [protocol][crlf]Host: [host][crlf][auth]X-Custom: [ua][split]Connection: Keep-Alive[crlf][crlf]"
+        val formatted = PayloadInjector.formatPayload(
+            rawTemplate = template,
+            targetHost = "target.ssh.com",
+            targetPort = 22,
+            proxyUser = "proxyUser",
+            proxyPass = "proxyPass",
+            method = "POST"
+        )
+
+        assertTrue(formatted.contains("POST target.ssh.com:22 HTTP/1.1\r\n"))
+        assertTrue(formatted.contains("Host: target.ssh.com\r\n"))
+        assertTrue(formatted.contains("Proxy-Authorization: Basic"))
+        assertTrue(formatted.contains("[split]"))
+        assertTrue(formatted.contains("Connection: Keep-Alive\r\n\r\n"))
+    }
 }

@@ -1,12 +1,13 @@
 package com.example.vpn.engine
 
 import com.example.data.AppLogger
+import com.example.model.SshTunnelMode
 import com.example.model.VpnProfile
 import com.example.vpn.AegisVpnService
+import com.example.vpn.engine.ssh.SshSocketFactory
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
-import com.jcraft.jsch.SocketFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,8 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.DataInputStream
 import java.io.DataOutputStream
-import java.io.InputStream
-import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -31,8 +30,9 @@ class SshEngineAdapter : VpnEngineAdapter {
     private var serverJob: Job? = null
     private val activeChannels = CopyOnWriteArrayList<ChannelDirectTCPIP>()
     private val engineScope = CoroutineScope(Dispatchers.IO + Job())
+    private var currentMode: SshTunnelMode = SshTunnelMode.DIRECT
 
-    override fun getEngineName(): String = "SSH / Injector Engine"
+    override fun getEngineName(): String = "SSH Engine (${currentMode.badge})"
     override fun getLocalSocksPort(): Int = localSocksPort
     override fun isRunning(): Boolean = isEngineRunning
 
@@ -42,39 +42,33 @@ class SshEngineAdapter : VpnEngineAdapter {
         tunFd: Int
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            AppLogger.i(TAG, "Initializing SSH connection to ${profile.server}:${profile.port}")
+            currentMode = profile.sshMode
+            AppLogger.i(TAG, "Initializing SSH [${profile.sshMode.displayName}] to ${profile.server}:${profile.port}")
             val jsch = JSch()
 
-            val customSocketFactory = object : SocketFactory {
-                override fun createSocket(host: String, port: Int): Socket {
-                    val socket = Socket()
-                    AppLogger.i(TAG, "Protecting upstream SSH socket with VpnService.protect()")
-                    vpnService.protect(socket)
-
-                    PayloadInjector.injectAndConnect(
-                        socket = socket,
-                        targetHost = host,
-                        targetPort = port,
-                        proxyHost = profile.proxyHost,
-                        proxyPort = profile.proxyPort,
-                        payload = profile.sshPayload,
-                        timeoutMs = 12000
-                    )
-                    return socket
-                }
-
-                override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
-                override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
+            // 1. Configure Private Key identity if provided
+            if (profile.sshPrivateKey.isNotBlank()) {
+                val keyBytes = profile.sshPrivateKey.trim().toByteArray(Charsets.UTF_8)
+                val passBytes = if (profile.sshPassphrase.isNotBlank()) {
+                    profile.sshPassphrase.toByteArray(Charsets.UTF_8)
+                } else null
+                jsch.addIdentity("user_key", keyBytes, null, passBytes)
+                AppLogger.i(TAG, "Configured SSH private key authentication for user '${profile.sshUsername}'")
             }
 
+            // 2. Set custom transport socket factory supporting all 15 modes
+            val customSocketFactory = SshSocketFactory(profile, vpnService)
+
             val session = jsch.getSession(profile.sshUsername, profile.server, profile.port)
-            session.setPassword(profile.password)
+            if (profile.password.isNotBlank()) {
+                session.setPassword(profile.password)
+            }
             session.setSocketFactory(customSocketFactory)
 
-            // SSH configuration
+            // 3. Security and connection configuration
             val config = java.util.Properties()
             config["StrictHostKeyChecking"] = "no"
-            config["PreferredAuthentications"] = "password,publickey,keyboard-interactive"
+            config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
             session.setConfig(config)
             session.serverAliveInterval = 30
             session.serverAliveCountMax = 3
@@ -87,14 +81,42 @@ class SshEngineAdapter : VpnEngineAdapter {
                 return@withContext false
             }
 
-            AppLogger.i(TAG, "SSH connected. Starting local SOCKS5 proxy server on 127.0.0.1:$localSocksPort")
+            AppLogger.i(TAG, "SSH session authenticated (${session.serverVersion})")
+            jschSession = session
+
+            // 4. Configure Local or Remote Port Forwarding if requested
+            if (profile.sshMode == SshTunnelMode.LOCAL_PORT_FORWARDING) {
+                try {
+                    val bound = session.setPortForwardingL(
+                        profile.sshLocalForwardPort,
+                        profile.sshRemoteForwardHost.ifBlank { "127.0.0.1" },
+                        profile.sshRemoteForwardPort
+                    )
+                    AppLogger.i(TAG, "Local Port Forwarding active on 127.0.0.1:$bound -> ${profile.sshRemoteForwardHost}:${profile.sshRemoteForwardPort}")
+                } catch (e: Exception) {
+                    AppLogger.w(TAG, "Local port forwarding note: ${e.message}")
+                }
+            } else if (profile.sshMode == SshTunnelMode.REMOTE_PORT_FORWARDING) {
+                try {
+                    session.setPortForwardingR(
+                        profile.sshRemoteListenPort,
+                        profile.sshRemoteForwardHost.ifBlank { "127.0.0.1" },
+                        profile.sshRemoteForwardPort
+                    )
+                    AppLogger.i(TAG, "Remote Port Forwarding active on remote :${profile.sshRemoteListenPort} -> local ${profile.sshRemoteForwardHost}:${profile.sshRemoteForwardPort}")
+                } catch (e: Exception) {
+                    AppLogger.w(TAG, "Remote port forwarding rejected by server (server GatewayPorts policy): ${e.message}")
+                }
+            }
+
+            // 5. Start high-performance local SOCKS5 server on 127.0.0.1:$localSocksPort
+            AppLogger.i(TAG, "Starting local SOCKS5 router on 127.0.0.1:$localSocksPort")
             val sSocket = ServerSocket(localSocksPort, 50, InetAddress.getByName("127.0.0.1"))
             serverSocket = sSocket
-            jschSession = session
 
             startSocksServer(sSocket, session)
 
-            // Now start HEV SOCKS5 tunnel pointing to this local SOCKS5 proxy
+            // 6. Attach HEV SOCKS5 tunnel forwarder to our local SOCKS5 router
             val hevStarted = HevTunnelManager.start(
                 context = vpnService,
                 tunFd = tunFd,
@@ -109,7 +131,7 @@ class SshEngineAdapter : VpnEngineAdapter {
             }
 
             isEngineRunning = true
-            AppLogger.i(TAG, "SSH Engine and HEV TUN forwarder successfully running")
+            AppLogger.i(TAG, "SSH Tunnel Engine and HEV forwarder successfully running [${profile.sshMode.displayName}]")
             true
         } catch (e: Throwable) {
             AppLogger.e(TAG, "Error starting SSH engine: ${e.message}", e)
@@ -158,7 +180,6 @@ class SshEngineAdapter : VpnEngineAdapter {
             val atyp = input.readByte().toInt()
 
             if (cmd != 0x01) {
-                // Command not supported
                 output.write(byteArrayOf(0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                 output.flush()
                 clientSocket.close()
@@ -210,7 +231,7 @@ class SshEngineAdapter : VpnEngineAdapter {
 
     override suspend fun stop() = withContext(Dispatchers.IO) {
         try {
-            AppLogger.i(TAG, "Stopping SSH Engine and releasing ports")
+            AppLogger.i(TAG, "Stopping SSH Engine and releasing resources")
             isEngineRunning = false
             HevTunnelManager.stop()
 

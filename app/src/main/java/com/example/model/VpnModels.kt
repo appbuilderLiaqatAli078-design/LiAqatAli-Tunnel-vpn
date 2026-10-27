@@ -57,6 +57,27 @@ sealed class VpnState {
     val isBusy: Boolean get() = this is Validating || this is StartingEngine || this is Connecting || this is Reconnecting || this is Stopping
 }
 
+enum class SshTunnelMode(
+    val displayName: String,
+    val badge: String,
+    val description: String
+) {
+    DIRECT("SSH Direct", "DIRECT", "Direct SSH server connection"),
+    HTTP_PROXY("SSH HTTP Proxy", "HTTP", "SSH connection through an HTTP proxy"),
+    HTTP_CONNECT("SSH HTTP CONNECT", "CONNECT", "Standard RFC 2817 HTTP CONNECT proxy tunnel"),
+    CUSTOM_PAYLOAD("SSH Custom Payload", "PAYLOAD", "Custom HTTP injector payload with headers and macros"),
+    SSL_TLS("SSH SSL / TLS", "TLS", "SSH over SSL/TLS transport with SNI"),
+    WEBSOCKET("SSH WebSocket (WS)", "WS", "SSH over WebSocket HTTP Upgrade transport"),
+    SECURE_WEBSOCKET("SSH Secure WebSocket (WSS)", "WSS", "SSH over TLS-encrypted WebSocket transport"),
+    SSL_WEBSOCKET("SSH + TLS + WebSocket", "TLS+WS", "Combined TLS, WebSocket, and SSH transport"),
+    SOCKS4("SSH SOCKS4 Proxy", "SOCKS4", "SSH connection through an outbound SOCKS4 proxy"),
+    SOCKS5("SSH SOCKS5 Proxy", "SOCKS5", "SSH connection through an outbound SOCKS5 proxy with auth"),
+    PROXY_CHAIN("SSH Proxy Chaining", "CHAIN", "Multi-hop proxy chain before reaching the SSH server"),
+    LOCAL_PORT_FORWARDING("SSH Local Port Forwarding", "PORT-L", "Local TCP port forwarding through SSH"),
+    REMOTE_PORT_FORWARDING("SSH Remote Port Forwarding", "PORT-R", "Remote TCP port forwarding from SSH server"),
+    DYNAMIC_PORT_FORWARDING("SSH Dynamic SOCKS Forwarding", "DYNAMIC", "Local SOCKS5 proxy routed through SSH tunnel")
+}
+
 data class VpnProfile(
     val id: String,
     val name: String,
@@ -78,6 +99,22 @@ data class VpnProfile(
     val sshPayload: String = "", // e.g. CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf][crlf]
     val proxyHost: String = "",
     val proxyPort: Int = 0,
+    val sshMode: SshTunnelMode = SshTunnelMode.DIRECT,
+    val sshPrivateKey: String = "",
+    val sshPassphrase: String = "",
+    val sshProxyUser: String = "",
+    val sshProxyPass: String = "",
+    val sshSni: String = "",
+    val sshWsPath: String = "/ssh",
+    val sshCustomHeaders: String = "",
+    val sshChainProxyHost: String = "",
+    val sshChainProxyPort: Int = 0,
+    val sshChainProxyType: String = "SOCKS5", // HTTP or SOCKS5
+    val sshLocalForwardPort: Int = 10880,
+    val sshRemoteForwardHost: String = "127.0.0.1",
+    val sshRemoteForwardPort: Int = 80,
+    val sshRemoteListenPort: Int = 8080,
+    val allowInsecureSsl: Boolean = false,
     // Routing & DNS
     val dnsPrimary: String = "1.1.1.1",
     val dnsSecondary: String = "8.8.8.8",

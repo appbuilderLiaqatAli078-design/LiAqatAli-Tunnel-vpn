@@ -110,7 +110,16 @@ fun ConnectionDetailsScreen(
                 }
 
                 DetailRow("Status", if (vpnState is VpnState.Connected) "Active / Routing" else "Standby")
-                DetailRow("Primary Engine", if (selectedProfile?.protocol == com.example.model.ProtocolType.SSH) "SSH Engine (JSch)" else "Xray Core v26 JNI")
+                DetailRow("Primary Engine", if (selectedProfile?.protocol == com.example.model.ProtocolType.SSH) "SSH Engine (${selectedProfile?.sshMode?.badge ?: "DIRECT"})" else "Xray Core v26 JNI")
+                if (selectedProfile?.protocol == com.example.model.ProtocolType.SSH) {
+                    DetailRow("SSH Tunnel Mode", selectedProfile?.sshMode?.displayName ?: "Direct")
+                    if (selectedProfile?.proxyHost?.isNotBlank() == true) {
+                        DetailRow("Outbound Proxy", "${selectedProfile?.proxyHost}:${selectedProfile?.proxyPort}")
+                    }
+                    if (selectedProfile?.sshSni?.isNotBlank() == true) {
+                        DetailRow("TLS SNI Host", selectedProfile?.sshSni ?: "")
+                    }
+                }
                 DetailRow("TUN Forwarder", "HEV SOCKS5 Tunnel v2.19.3 (C/lwIP)")
                 DetailRow("Device ABI", "$abi (${if (abi.contains("64")) "64-bit ARM" else "32-bit ARM"})")
                 DetailRow("Socket Protection", "VpnService.protect() Active")

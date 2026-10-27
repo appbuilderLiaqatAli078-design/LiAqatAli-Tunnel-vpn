@@ -144,11 +144,24 @@ class ProfileRepository(private val context: Context) {
                 protocol = ProtocolType.SSH,
                 server = "128.199.192.1",
                 port = 22,
+                sshMode = com.example.model.SshTunnelMode.CUSTOM_PAYLOAD,
                 sshUsername = "vpnuser",
                 password = "demoPassword123",
                 sshPayload = "CONNECT [host_port] HTTP/1.1[crlf]Host: bug.isp.com[crlf]User-Agent: [ua][crlf]Connection: Upgrade[crlf][crlf]",
                 proxyHost = "",
                 proxyPort = 0
+            ),
+            VpnProfile(
+                id = UUID.randomUUID().toString(),
+                name = "SSH Secure WebSocket (WSS)",
+                protocol = ProtocolType.SSH,
+                server = "ssh-wss.aegistunnel.org",
+                port = 443,
+                sshMode = com.example.model.SshTunnelMode.SECURE_WEBSOCKET,
+                sshUsername = "aegisuser",
+                password = "wssPassword456",
+                sshSni = "ssh-wss.aegistunnel.org",
+                sshWsPath = "/ssh"
             ),
             VpnProfile(
                 id = UUID.randomUUID().toString(),

@@ -3,6 +3,7 @@ package com.example.parser
 import android.net.Uri
 import android.util.Base64
 import com.example.model.ProtocolType
+import com.example.model.SshTunnelMode
 import com.example.model.VpnProfile
 import org.json.JSONObject
 import java.net.URLDecoder
@@ -209,6 +210,23 @@ object ConfigParser {
         val payload = queryParams["payload"] ?: ""
         val proxyHost = queryParams["proxy_host"] ?: ""
         val proxyPort = queryParams["proxy_port"]?.toIntOrNull() ?: 0
+        val modeStr = queryParams["mode"] ?: "DIRECT"
+        val sshMode = try {
+            SshTunnelMode.valueOf(modeStr.uppercase())
+        } catch (e: Exception) {
+            SshTunnelMode.DIRECT
+        }
+        val sni = queryParams["sni"] ?: ""
+        val wsPath = queryParams["ws_path"] ?: "/ssh"
+        val proxyUser = queryParams["proxy_user"] ?: ""
+        val proxyPass = queryParams["proxy_pass"] ?: ""
+        val chainHost = queryParams["chain_host"] ?: ""
+        val chainPort = queryParams["chain_port"]?.toIntOrNull() ?: 0
+        val chainType = queryParams["chain_type"] ?: "SOCKS5"
+        val localFwdPort = queryParams["local_fwd_port"]?.toIntOrNull() ?: 10880
+        val remoteFwdHost = queryParams["remote_fwd_host"] ?: "127.0.0.1"
+        val remoteFwdPort = queryParams["remote_fwd_port"]?.toIntOrNull() ?: 80
+        val remoteListenPort = queryParams["remote_listen_port"]?.toIntOrNull() ?: 8080
 
         val profile = VpnProfile(
             id = UUID.randomUUID().toString(),
@@ -220,7 +238,19 @@ object ConfigParser {
             password = password,
             sshPayload = payload,
             proxyHost = proxyHost,
-            proxyPort = proxyPort
+            proxyPort = proxyPort,
+            sshMode = sshMode,
+            sshSni = sni,
+            sshWsPath = wsPath,
+            sshProxyUser = proxyUser,
+            sshProxyPass = proxyPass,
+            sshChainProxyHost = chainHost,
+            sshChainProxyPort = chainPort,
+            sshChainProxyType = chainType,
+            sshLocalForwardPort = localFwdPort,
+            sshRemoteForwardHost = remoteFwdHost,
+            sshRemoteForwardPort = remoteFwdPort,
+            sshRemoteListenPort = remoteListenPort
         )
         return ParseResult.Success(profile)
     }
@@ -254,7 +284,27 @@ object ConfigParser {
                     sshPayload = root.optString("sshPayload", ""),
                     proxyHost = root.optString("proxyHost", ""),
                     proxyPort = root.optInt("proxyPort", 0),
-                    flow = root.optString("flow", "")
+                    flow = root.optString("flow", ""),
+                    sshMode = try {
+                        SshTunnelMode.valueOf(root.optString("sshMode", SshTunnelMode.DIRECT.name))
+                    } catch (e: Exception) {
+                        SshTunnelMode.DIRECT
+                    },
+                    sshPrivateKey = root.optString("sshPrivateKey", ""),
+                    sshPassphrase = root.optString("sshPassphrase", ""),
+                    sshProxyUser = root.optString("sshProxyUser", ""),
+                    sshProxyPass = root.optString("sshProxyPass", ""),
+                    sshSni = root.optString("sshSni", ""),
+                    sshWsPath = root.optString("sshWsPath", "/ssh"),
+                    sshCustomHeaders = root.optString("sshCustomHeaders", ""),
+                    sshChainProxyHost = root.optString("sshChainProxyHost", ""),
+                    sshChainProxyPort = root.optInt("sshChainProxyPort", 0),
+                    sshChainProxyType = root.optString("sshChainProxyType", "SOCKS5"),
+                    sshLocalForwardPort = root.optInt("sshLocalForwardPort", 10880),
+                    sshRemoteForwardHost = root.optString("sshRemoteForwardHost", "127.0.0.1"),
+                    sshRemoteForwardPort = root.optInt("sshRemoteForwardPort", 80),
+                    sshRemoteListenPort = root.optInt("sshRemoteListenPort", 8080),
+                    allowInsecureSsl = root.optBoolean("allowInsecureSsl", false)
                 )
             )
         }
@@ -344,7 +394,7 @@ object ConfigParser {
                 "vmess://${Base64.encodeToString(json.toString().toByteArray(), Base64.NO_WRAP)}"
             }
             ProtocolType.SSH -> {
-                "ssh://${profile.sshUsername}:${profile.password}@${profile.server}:${profile.port}?proxy_host=${profile.proxyHost}&proxy_port=${profile.proxyPort}#${Uri.encode(profile.name)}"
+                "ssh://${profile.sshUsername}:${profile.password}@${profile.server}:${profile.port}?mode=${profile.sshMode.name}&proxy_host=${profile.proxyHost}&proxy_port=${profile.proxyPort}&sni=${profile.sshSni}&ws_path=${profile.sshWsPath}#${Uri.encode(profile.name)}"
             }
             else -> {
                 exportProfileToJson(profile)
@@ -376,6 +426,22 @@ object ConfigParser {
             put("dnsSecondary", profile.dnsSecondary)
             put("blockIpv6", profile.blockIpv6)
             put("flow", profile.flow)
+            put("sshMode", profile.sshMode.name)
+            put("sshPrivateKey", profile.sshPrivateKey)
+            put("sshPassphrase", profile.sshPassphrase)
+            put("sshProxyUser", profile.sshProxyUser)
+            put("sshProxyPass", profile.sshProxyPass)
+            put("sshSni", profile.sshSni)
+            put("sshWsPath", profile.sshWsPath)
+            put("sshCustomHeaders", profile.sshCustomHeaders)
+            put("sshChainProxyHost", profile.sshChainProxyHost)
+            put("sshChainProxyPort", profile.sshChainProxyPort)
+            put("sshChainProxyType", profile.sshChainProxyType)
+            put("sshLocalForwardPort", profile.sshLocalForwardPort)
+            put("sshRemoteForwardHost", profile.sshRemoteForwardHost)
+            put("sshRemoteForwardPort", profile.sshRemoteForwardPort)
+            put("sshRemoteListenPort", profile.sshRemoteListenPort)
+            put("allowInsecureSsl", profile.allowInsecureSsl)
         }
         return obj.toString(2)
     }
