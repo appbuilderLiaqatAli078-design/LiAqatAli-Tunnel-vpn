@@ -36,7 +36,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-class AegisVpnService : VpnService() {
+class CustomTunnelVpnService : VpnService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
     private var statsJob: Job? = null
@@ -64,7 +64,7 @@ class AegisVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.i(TAG, "AegisVpnService created")
+        AppLogger.i(TAG, "CustomTunnelVpnService created")
         createNotificationChannel()
         registerNetworkCallback()
     }
@@ -102,11 +102,11 @@ class AegisVpnService : VpnService() {
                 if (profile.isExpired) {
                     throw IllegalStateException("Security Lock: This .ctp profile has expired")
                 }
-                if (profile.blockRoot && com.example.security.DeviceSecurityManager.isDeviceRooted(this@AegisVpnService)) {
+                if (profile.blockRoot && com.example.security.DeviceSecurityManager.isDeviceRooted(this@CustomTunnelVpnService)) {
                     throw IllegalStateException("Security Lock: This .ctp profile blocks rooted devices")
                 }
                 if (profile.lockedHwid.isNotBlank()) {
-                    val deviceHwid = com.example.security.DeviceSecurityManager.getHardwareId(this@AegisVpnService)
+                    val deviceHwid = com.example.security.DeviceSecurityManager.getHardwareId(this@CustomTunnelVpnService)
                     if (!profile.lockedHwid.equals(deviceHwid, ignoreCase = true)) {
                         throw IllegalStateException("Security Lock: Profile locked to another Hardware ID ($deviceHwid)")
                     }
@@ -165,7 +165,7 @@ class AegisVpnService : VpnService() {
                 _vpnState.value = VpnState.Connecting(effectiveProfile.name)
                 updateNotification("Connecting to ${effectiveProfile.name}...", false)
 
-                val started = engine.start(effectiveProfile, this@AegisVpnService, tunPfd.fd)
+                val started = engine.start(effectiveProfile, this@CustomTunnelVpnService, tunPfd.fd)
                 if (!started) {
                     throw IllegalStateException("Tunnel engine failed to start or attach")
                 }
@@ -307,7 +307,7 @@ class AegisVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        AppLogger.i(TAG, "AegisVpnService destroyed")
+        AppLogger.i(TAG, "CustomTunnelVpnService destroyed")
         cleanup()
         try {
             connectivityManager.unregisterNetworkCallback(networkCallback)
@@ -360,7 +360,7 @@ class AegisVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val disconnectIntent = Intent(this, AegisVpnService::class.java).apply {
+        val disconnectIntent = Intent(this, CustomTunnelVpnService::class.java).apply {
             action = ACTION_DISCONNECT
         }
         val disconnectPendingIntent = PendingIntent.getService(
@@ -418,8 +418,8 @@ class AegisVpnService : VpnService() {
     }
 
     companion object {
-        const val TAG = "AegisVpnService"
-        const val CHANNEL_ID = "aegis_vpn_status_channel"
+        const val TAG = "CustomTunnelVpnService"
+        const val CHANNEL_ID = "ctp_vpn_status_channel"
         const val NOTIFICATION_ID = 2001
 
         const val ACTION_CONNECT = "com.example.vpn.ACTION_CONNECT"
@@ -441,7 +441,7 @@ class AegisVpnService : VpnService() {
 
         fun startVpn(context: Context, profile: VpnProfile) {
             setActiveProfile(profile)
-            val intent = Intent(context, AegisVpnService::class.java).apply {
+            val intent = Intent(context, CustomTunnelVpnService::class.java).apply {
                 action = ACTION_CONNECT
                 putExtra(EXTRA_PROFILE_ID, profile.id)
             }
@@ -453,7 +453,7 @@ class AegisVpnService : VpnService() {
         }
 
         fun stopVpn(context: Context) {
-            val intent = Intent(context, AegisVpnService::class.java).apply {
+            val intent = Intent(context, CustomTunnelVpnService::class.java).apply {
                 action = ACTION_DISCONNECT
             }
             context.startService(intent)

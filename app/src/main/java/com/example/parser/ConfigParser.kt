@@ -35,16 +35,22 @@ object ConfigParser {
             return ParseResult.Failure("Empty configuration string")
         }
 
+        val normalizedUri = if (!trimmed.startsWith("{") && !CtpConfigCrypto.isCtpContent(trimmed)) {
+            trimmed.replace("\r", "").replace("\n", "").trim()
+        } else {
+            trimmed
+        }
+
         return try {
             when {
                 CtpConfigCrypto.isCtpContent(trimmed) -> parseCtp(trimmed, unlockPassword, context)
-                trimmed.startsWith("vmess://", ignoreCase = true) -> parseVmess(trimmed)
-                trimmed.startsWith("vless://", ignoreCase = true) -> parseVless(trimmed)
-                trimmed.startsWith("trojan://", ignoreCase = true) -> parseTrojan(trimmed)
-                trimmed.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(trimmed)
-                trimmed.startsWith("ssh://", ignoreCase = true) -> parseSshUri(trimmed)
+                normalizedUri.startsWith("vmess://", ignoreCase = true) -> parseVmess(normalizedUri)
+                normalizedUri.startsWith("vless://", ignoreCase = true) -> parseVless(normalizedUri)
+                normalizedUri.startsWith("trojan://", ignoreCase = true) -> parseTrojan(normalizedUri)
+                normalizedUri.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(normalizedUri)
+                normalizedUri.startsWith("ssh://", ignoreCase = true) -> parseSshUri(normalizedUri)
                 trimmed.startsWith("{") -> parseJson(trimmed)
-                trimmed.contains("@") && !trimmed.contains("://") -> parseSshUri(trimmed)
+                normalizedUri.contains("@") && !normalizedUri.contains("://") -> parseSshUri(normalizedUri)
                 else -> ParseResult.Failure("Unsupported format. Expected .ctp file, vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON.")
             }
         } catch (e: Exception) {
@@ -79,48 +85,217 @@ object ConfigParser {
         }
     }
 
-    private fun parseVmess(uriStr: String): ParseResult {
-        val base64Data = uriStr.substring(8).trim()
-        val decoded = try {
-            String(Base64.decode(base64Data, Base64.DEFAULT or Base64.URL_SAFE), StandardCharsets.UTF_8)
+    private fun tryDecodeBase64Utf8(raw: String): String? {
+        val cleaned = raw.replace("\\s+".toRegex(), "")
+        if (cleaned.isEmpty()) return null
+        return try {
+            val bytes = Base64.decode(cleaned, Base64.DEFAULT or Base64.URL_SAFE)
+            if (bytes.isEmpty()) return null
+            String(bytes, StandardCharsets.UTF_8).trim()
         } catch (e: Exception) {
-            return ParseResult.Failure("Invalid VMess Base64 payload", e.message)
+            null
+        }
+    }
+
+    private fun parseVmess(uriStr: String): ParseResult {
+        val afterScheme = uriStr.substring(8).trim()
+        if (afterScheme.isEmpty()) {
+            return ParseResult.Failure("Empty VMess URI payload")
         }
 
-        val json = JSONObject(decoded)
-        val server = json.optString("add").trim()
-        val port = json.optInt("port", 0)
-        val id = json.optString("id").trim()
+        val outerFragment = if (afterScheme.contains("#")) {
+            decodeUrlComponent(afterScheme.substringAfter("#")).trim()
+        } else ""
+        val withoutOuterFragment = afterScheme.substringBefore("#").trim()
 
-        if (server.isEmpty()) return ParseResult.Failure("VMess config is missing server address ('add')")
+        // 1. Check if the entire body (before optional #fragment) decodes from Base64
+        val fullDecoded = if (!withoutOuterFragment.contains("@")) {
+            tryDecodeBase64Utf8(withoutOuterFragment)
+        } else null
+
+        if (fullDecoded != null && fullDecoded.startsWith("{")) {
+            val json = JSONObject(fullDecoded)
+            val server = json.optString("add").trim()
+            val port = json.optString("port").trim().toIntOrNull() ?: json.optInt("port", 0)
+            val id = json.optString("id").trim()
+
+            if (server.isEmpty()) return ParseResult.Failure("VMess config is missing server address ('add')")
+            if (port !in 1..65535) return ParseResult.Failure("VMess invalid port: $port")
+            if (id.isEmpty()) return ParseResult.Failure("VMess config is missing UUID ('id')")
+
+            val name = json.optString("ps", "").trim().ifEmpty {
+                outerFragment.ifEmpty { "VMess-$server:$port" }
+            }
+            val rawNet = json.optString("net", "tcp").trim().lowercase().ifEmpty { "tcp" }
+            val network = when (rawNet) {
+                "websocket" -> "ws"
+                "gun" -> "grpc"
+                "splithttp" -> "xhttp"
+                "http" -> "h2"
+                else -> rawNet
+            }
+            val rawTls = json.optString("tls", "none").trim().lowercase()
+            val security = if (rawTls == "tls" || rawTls == "1" || rawTls == "true") "tls" else if (rawTls == "reality") "reality" else "none"
+            val wsHost = json.optString("host", "").trim()
+            val sni = json.optString("sni", "").trim().ifBlank { wsHost.ifBlank { if (security == "tls") server else "" } }
+            val path = json.optString("path", "").trim()
+            val alpn = json.optString("alpn", "").trim()
+            val fp = json.optString("fp", "chrome").trim().ifBlank { "chrome" }
+            val headerType = json.optString("type", "none").trim().ifBlank { "none" }
+            val cipher = json.optString("scy", "auto").trim().ifBlank { "auto" }
+            val allowInsecure = json.optBoolean("allowInsecure", false) ||
+                json.optString("allowInsecure").equals("1") ||
+                json.optString("allowInsecure").equals("true", ignoreCase = true)
+
+            val profile = VpnProfile(
+                id = UUID.randomUUID().toString(),
+                name = name,
+                protocol = ProtocolType.VMESS,
+                server = server,
+                port = port,
+                password = id,
+                security = security,
+                network = network,
+                path = path,
+                sni = sni,
+                wsHost = wsHost,
+                headerType = headerType,
+                fingerprint = fp,
+                alpn = alpn,
+                encryption = cipher,
+                allowInsecureSsl = allowInsecure
+            )
+            return ParseResult.Success(profile)
+        }
+
+        // 2. Handle URI / Query-based VMess formats:
+        //    a) Base64-encoded URI/query string (e.g. "v:vmess@host:443?type=ws&path=/vmess&security=tls&uuid=...")
+        //    b) Shadowrocket mixed Base64 + query (e.g. "vmess://BASE64(auto:uuid@host:port)?obfs=websocket&path=/vmess&tls=1")
+        //    c) Standard plain VMess URI (e.g. "vmess://uuid@host:443?type=ws&security=tls&path=/vmess#remark")
+        val uriLikeCandidate = when {
+            fullDecoded != null && (fullDecoded.contains("@") || fullDecoded.contains(":")) -> fullDecoded
+            !withoutOuterFragment.substringBefore("?").contains("@") && withoutOuterFragment.contains("?") -> {
+                val base64Part = withoutOuterFragment.substringBefore("?")
+                val queryPart = withoutOuterFragment.substringAfter("?")
+                val decodedPrefix = tryDecodeBase64Utf8(base64Part)
+                if (decodedPrefix != null) "$decodedPrefix?$queryPart" else withoutOuterFragment
+            }
+            else -> withoutOuterFragment
+        }
+
+        return parseVmessUriLike(uriLikeCandidate, outerFragment)
+    }
+
+    private fun parseVmessUriLike(rawCandidate: String, outerFragment: String): ParseResult {
+        val innerFragment = if (rawCandidate.contains("#")) {
+            decodeUrlComponent(rawCandidate.substringAfter("#")).trim()
+        } else ""
+        val remark = innerFragment.ifEmpty { outerFragment }
+
+        val withoutFragment = rawCandidate.substringBefore("#").trim().removePrefix("vmess://")
+        val queryStr = if (withoutFragment.contains("?")) withoutFragment.substringAfter("?") else ""
+        val queryParams = parseQueryParams(queryStr)
+        val endpointPart = withoutFragment.substringBefore("?").trim()
+
+        val userInfoPart = if (endpointPart.contains("@")) endpointPart.substringBeforeLast("@").trim() else ""
+        val hostPortRaw = if (endpointPart.contains("@")) endpointPart.substringAfterLast("@").trim() else endpointPart
+
+        // Clean any non-printable ASCII control bytes from host:port
+        val cleanedHostPort = hostPortRaw.filter { it.code in 33..126 }.removeSuffix("/")
+        if (cleanedHostPort.isEmpty()) {
+            return ParseResult.Failure("Invalid VMess URI: missing server host and port")
+        }
+
+        val server: String
+        val port: Int
+        if (cleanedHostPort.startsWith("[")) {
+            val closeBracket = cleanedHostPort.indexOf(']')
+            if (closeBracket <= 1) return ParseResult.Failure("Invalid VMess IPv6 host format")
+            server = cleanedHostPort.substring(1, closeBracket)
+            val portStr = cleanedHostPort.substring(closeBracket + 1).removePrefix(":")
+            port = portStr.toIntOrNull() ?: 443
+        } else if (cleanedHostPort.contains(":")) {
+            server = cleanedHostPort.substringBeforeLast(":").trim()
+            port = cleanedHostPort.substringAfterLast(":").trim().toIntOrNull() ?: 0
+        } else {
+            server = cleanedHostPort
+            port = queryParams["port"]?.toIntOrNull() ?: 443
+        }
+
+        if (server.isEmpty()) return ParseResult.Failure("VMess config is missing server address")
         if (port !in 1..65535) return ParseResult.Failure("VMess invalid port: $port")
-        if (id.isEmpty()) return ParseResult.Failure("VMess config is missing UUID ('id')")
 
-        val name = json.optString("ps", "VMess-$server")
-        val network = json.optString("net", "tcp").lowercase()
-        val security = json.optString("tls", "none")
-        val wsHost = json.optString("host", "")
-        val sni = json.optString("sni", "").ifBlank { wsHost }
-        val path = json.optString("path", "")
-        val alpn = json.optString("alpn", "")
-        val fp = json.optString("fp", "chrome").ifBlank { "chrome" }
-        val headerType = json.optString("type", "none").ifBlank { "none" }
+        val queryUuid = (queryParams["uuid"] ?: queryParams["id"] ?: "").trim()
+        val cleanedUserInfo = userInfoPart.filter { it.code in 33..126 }
+        val userUuidCandidate = if (cleanedUserInfo.contains(":")) {
+            val afterColon = cleanedUserInfo.substringAfter(":").trim()
+            if (afterColon.equals("vmess", ignoreCase = true)) "" else afterColon
+        } else {
+            cleanedUserInfo
+        }
+        val uuid = queryUuid.ifEmpty { userUuidCandidate }
+        if (uuid.isEmpty()) {
+            return ParseResult.Failure("VMess config is missing UUID ('uuid' or user info)")
+        }
+
+        val userCipherCandidate = if (cleanedUserInfo.contains(":")) {
+            val beforeColon = cleanedUserInfo.substringBefore(":").trim()
+            if (beforeColon.equals("v", ignoreCase = true) || beforeColon.equals("vmess", ignoreCase = true)) "" else beforeColon
+        } else ""
+        val cipher = (queryParams["encryption"] ?: queryParams["scy"] ?: queryParams["cipher"] ?: userCipherCandidate.ifEmpty { "auto" }).trim().ifEmpty { "auto" }
+
+        val rawNetwork = (queryParams["type"] ?: queryParams["net"] ?: queryParams["network"] ?: queryParams["obfs"] ?: "tcp").trim().lowercase()
+        val network = when (rawNetwork) {
+            "", "none", "tcp" -> "tcp"
+            "ws", "websocket" -> "ws"
+            "grpc", "gun" -> "grpc"
+            "httpupgrade" -> "httpupgrade"
+            "xhttp", "splithttp" -> "xhttp"
+            "h2", "http" -> "h2"
+            "kcp" -> "kcp"
+            else -> rawNetwork
+        }
+
+        val rawSecurity = (queryParams["security"] ?: queryParams["tls"] ?: "").trim().lowercase()
+        val security = when (rawSecurity) {
+            "tls", "1", "true" -> "tls"
+            "reality" -> "reality"
+            else -> "none"
+        }
+
+        val wsHost = (queryParams["host"] ?: queryParams["obfsParam"] ?: "").trim()
+        val sni = (queryParams["sni"] ?: queryParams["peer"] ?: "").trim().ifEmpty {
+            wsHost.ifEmpty { if (security == "tls") server else "" }
+        }
+        val path = (queryParams["path"] ?: queryParams["serviceName"] ?: "").trim()
+        val alpn = (queryParams["alpn"] ?: "").trim()
+        val fp = (queryParams["fp"] ?: "chrome").trim().ifEmpty { "chrome" }
+        val headerType = (queryParams["headerType"] ?: "none").trim().ifEmpty { "none" }
+        val allowInsecure = listOf("allowInsecure", "insecure", "allow_insecure").any { key ->
+            val v = queryParams[key]?.trim()
+            v == "1" || v.equals("true", ignoreCase = true)
+        }
+        val name = remark.ifEmpty {
+            (queryParams["remarks"] ?: queryParams["ps"] ?: "").trim().ifEmpty { "VMess-$server:$port" }
+        }
 
         val profile = VpnProfile(
             id = UUID.randomUUID().toString(),
-            name = name.ifEmpty { "VMess-$server:$port" },
+            name = name,
             protocol = ProtocolType.VMESS,
             server = server,
             port = port,
-            password = id,
-            security = if (security.equals("tls", true)) "tls" else "none",
+            password = uuid,
+            security = security,
             network = network,
             path = path,
             sni = sni,
             wsHost = wsHost,
             headerType = headerType,
             fingerprint = fp,
-            alpn = alpn
+            alpn = alpn,
+            encryption = cipher,
+            allowInsecureSsl = allowInsecure
         )
         return ParseResult.Success(profile)
     }
@@ -390,7 +565,7 @@ object ConfigParser {
 
     private fun parseJson(jsonStr: String): ParseResult {
         val root = JSONObject(jsonStr)
-        // Check if custom Aegis profile export
+        // Check if Custom Tunnel Pro profile export
         if (root.has("protocol") && root.has("server")) {
             val proto = try {
                 ProtocolType.valueOf(root.getString("protocol"))
@@ -586,7 +761,7 @@ object ConfigParser {
             )
         }
 
-        return ParseResult.Failure("JSON does not contain recognized Xray outbounds or Aegis profile schema")
+        return ParseResult.Failure("JSON does not contain recognized Xray outbounds or Custom Tunnel Pro profile schema")
     }
 
     private fun decodeUrlComponent(encoded: String): String {

@@ -82,7 +82,7 @@ object SshProxyHandler {
         proxyPort: Int,
         targetHost: String,
         targetPort: Int,
-        userId: String = "aegis",
+        userId: String = "customtunnel",
         timeoutMs: Int = 10000
     ) {
         if (!socket.isConnected) {

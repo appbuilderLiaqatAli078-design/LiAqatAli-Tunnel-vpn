@@ -54,7 +54,7 @@ import com.example.ui.screens.LogsScreen
 import com.example.ui.screens.ProfileEditScreen
 import com.example.ui.screens.ProfilesScreen
 import com.example.ui.screens.SettingsScreen
-import com.example.ui.theme.AegisTunnelTheme
+import com.example.ui.theme.CustomTunnelProTheme
 import com.example.ui.viewmodel.VpnViewModel
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
                 else -> isSystemInDarkTheme()
             }
 
-            AegisTunnelTheme(darkTheme = darkTheme) {
+            CustomTunnelProTheme(darkTheme = darkTheme) {
                 MainAppContent(viewModel = viewModel)
             }
         }

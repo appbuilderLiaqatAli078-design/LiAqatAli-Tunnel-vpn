@@ -4,7 +4,7 @@ import android.util.Base64
 import com.example.data.AppLogger
 import com.example.model.ProtocolType
 import com.example.model.VpnProfile
-import com.example.vpn.AegisVpnService
+import com.example.vpn.CustomTunnelVpnService
 import go.Seq
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,7 +29,7 @@ class XrayEngineAdapter : VpnEngineAdapter {
 
     override suspend fun start(
         profile: VpnProfile,
-        vpnService: AegisVpnService,
+        vpnService: CustomTunnelVpnService,
         tunFd: Int
     ): Boolean = withContext(Dispatchers.IO) {
         try {
@@ -255,7 +255,7 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
     }
 
-    private fun setupAssets(vpnService: AegisVpnService) {
+    private fun setupAssets(vpnService: CustomTunnelVpnService) {
         val assetDir = vpnService.filesDir
         listOf("geoip.dat", "geosite.dat").forEach { filename ->
             val target = File(assetDir, filename)
@@ -368,13 +368,16 @@ class XrayEngineAdapter : VpnEngineAdapter {
                     put("protocol", "vmess")
                     put("settings", JSONObject().apply {
                         val vnext = JSONArray()
+                        val vmessCipher = profile.encryption.trim().lowercase().let {
+                            if (it.isEmpty() || it == "none") "auto" else it
+                        }
                         val serverObj = JSONObject().apply {
                             put("address", profile.server.trim())
                             put("port", profile.port)
                             val users = JSONArray().put(JSONObject().apply {
                                 put("id", profile.password.trim())
                                 put("alterId", 0)
-                                put("security", "auto")
+                                put("security", vmessCipher)
                                 put("level", 8)
                             })
                             put("users", users)

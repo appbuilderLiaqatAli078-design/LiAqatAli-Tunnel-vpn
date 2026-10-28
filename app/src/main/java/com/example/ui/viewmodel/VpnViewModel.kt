@@ -15,7 +15,7 @@ import com.example.model.VpnProfile
 import com.example.model.VpnState
 import com.example.parser.ConfigParser
 import com.example.parser.ParseResult
-import com.example.vpn.AegisVpnService
+import com.example.vpn.CustomTunnelVpnService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,8 +26,8 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val profileRepository = ProfileRepository(application)
     private val settingsRepository = SettingsRepository(application)
 
-    val vpnState: StateFlow<VpnState> = AegisVpnService.vpnState
-    val trafficStats: StateFlow<TrafficStats> = AegisVpnService.trafficStats
+    val vpnState: StateFlow<VpnState> = CustomTunnelVpnService.vpnState
+    val trafficStats: StateFlow<TrafficStats> = CustomTunnelVpnService.trafficStats
     val profiles: StateFlow<List<VpnProfile>> = profileRepository.profiles
     val logs: StateFlow<List<LogEntry>> = AppLogger.logsFlow
     val settings: StateFlow<AppSettings> = settingsRepository.settings
@@ -49,7 +49,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 // 1. Prefer currently active VPN service profile if tunnel is running,
                 // 2. Otherwise use in-memory selection or persisted selectedProfileId from disk.
                 val runningProfileId = if (vpnState.value.isConnected || vpnState.value.isBusy) {
-                    AegisVpnService.activeProfile.value?.id
+                    CustomTunnelVpnService.activeProfile.value?.id
                 } else null
 
                 val targetId = runningProfileId
@@ -59,7 +59,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 val matched = targetId?.let { id -> list.find { it.id == id } } ?: list.first()
                 _selectedProfile.value = matched
                 profileRepository.setSelectedProfileId(matched.id)
-                AegisVpnService.setActiveProfile(matched)
+                CustomTunnelVpnService.setActiveProfile(matched)
             }
         }
     }
@@ -67,7 +67,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     fun selectProfile(profile: VpnProfile) {
         _selectedProfile.value = profile
         profileRepository.setSelectedProfileId(profile.id)
-        AegisVpnService.setActiveProfile(profile)
+        CustomTunnelVpnService.setActiveProfile(profile)
         AppLogger.i(TAG, "Selected profile: ${profile.name} (${profile.protocol.displayName})")
     }
 
@@ -82,12 +82,12 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         AppLogger.i(TAG, "User initiated connection to: ${profile.name}")
-        AegisVpnService.startVpn(context, profile)
+        CustomTunnelVpnService.startVpn(context, profile)
     }
 
     fun disconnect(context: Context) {
         AppLogger.i(TAG, "User requested disconnect")
-        AegisVpnService.stopVpn(context)
+        CustomTunnelVpnService.stopVpn(context)
     }
 
     fun saveProfile(profile: VpnProfile) {
@@ -96,7 +96,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         if (isNewProfile || _selectedProfile.value?.id == profile.id || _selectedProfile.value == null) {
             _selectedProfile.value = profile
             profileRepository.setSelectedProfileId(profile.id)
-            AegisVpnService.setActiveProfile(profile)
+            CustomTunnelVpnService.setActiveProfile(profile)
         }
         AppLogger.i(TAG, "Saved profile: ${profile.name}")
     }
@@ -107,7 +107,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             val next = profiles.value.firstOrNull { it.id != id }
             _selectedProfile.value = next
             profileRepository.setSelectedProfileId(next?.id)
-            AegisVpnService.setActiveProfile(next)
+            CustomTunnelVpnService.setActiveProfile(next)
         }
         AppLogger.i(TAG, "Deleted profile id: $id")
     }

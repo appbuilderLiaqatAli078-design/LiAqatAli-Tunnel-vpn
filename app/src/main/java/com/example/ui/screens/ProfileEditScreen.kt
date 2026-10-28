@@ -602,7 +602,7 @@ fun ProfileEditScreen(
                             OutlinedTextField(
                                 value = sshProxyUser,
                                 onValueChange = { sshProxyUser = it },
-                                label = { Text("User ID (e.g. aegis)") },
+                                label = { Text("User ID (e.g. customtunnel)") },
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp)
                             )

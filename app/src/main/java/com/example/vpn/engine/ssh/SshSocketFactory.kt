@@ -3,7 +3,7 @@ package com.example.vpn.engine.ssh
 import com.example.data.AppLogger
 import com.example.model.SshTunnelMode
 import com.example.model.VpnProfile
-import com.example.vpn.AegisVpnService
+import com.example.vpn.CustomTunnelVpnService
 import com.example.vpn.engine.PayloadInjector
 import com.jcraft.jsch.SocketFactory
 import java.io.InputStream
@@ -13,7 +13,7 @@ import java.net.Socket
 
 class SshSocketFactory(
     private val profile: VpnProfile,
-    private val vpnService: AegisVpnService,
+    private val vpnService: CustomTunnelVpnService,
     private val timeoutMs: Int = 30000
 ) : SocketFactory {
 
@@ -166,7 +166,7 @@ class SshSocketFactory(
                     proxyPort = pPort,
                     targetHost = host,
                     targetPort = port,
-                    userId = profile.sshProxyUser.ifBlank { "aegis" },
+                    userId = profile.sshProxyUser.ifBlank { "customtunnel" },
                     timeoutMs = timeoutMs
                 )
                 rawSocket

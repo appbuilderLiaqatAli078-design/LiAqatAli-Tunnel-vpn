@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for fixing profile selection persistence, masking hosts outside the editor, adding encrypted .ctp custom configuration file export/import with user-configurable security locks, and hardening app and local storage security.",
-  "updatedAt":  "2026-10-28T11:08:41.420522225Z",
+  "summary":  "Implementation plan to fix VMess multi-format URI/Base64 parsing (including the exact URI from the screenshot), perform a comprehensive audit of all configuration parsers and VPN connection flows, and remove all remaining legacy Aegis references in favor of Custom Tunnel Pro.",
+  "updatedAt":  "2026-10-28T13:24:46.268035355Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -66,7 +66,7 @@
         </provider>
 
         <service
-            android:name=".vpn.AegisVpnService"
+            android:name=".vpn.CustomTunnelVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse"
             android:exported="false">

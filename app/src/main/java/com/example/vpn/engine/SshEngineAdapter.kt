@@ -4,7 +4,7 @@ import com.example.data.AppLogger
 import com.example.model.SshTunnelMode
 import com.example.model.VpnProfile
 import com.example.parser.SshTargetParser
-import com.example.vpn.AegisVpnService
+import com.example.vpn.CustomTunnelVpnService
 import com.example.vpn.engine.ssh.SshSocketFactory
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
@@ -39,7 +39,7 @@ class SshEngineAdapter : VpnEngineAdapter {
 
     override suspend fun start(
         profile: VpnProfile,
-        vpnService: AegisVpnService,
+        vpnService: CustomTunnelVpnService,
         tunFd: Int
     ): Boolean = withContext(Dispatchers.IO) {
         try {

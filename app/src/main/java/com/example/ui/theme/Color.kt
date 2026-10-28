@@ -2,7 +2,7 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// High-tech Cyber / Glassmorphism palette for AegisTunnel
+// High-tech Cyber / Glassmorphism palette for Custom Tunnel Pro
 val CyanPrimaryDark = Color(0xFF00E5FF)
 val CyanPrimaryLight = Color(0xFF006876)
 val BlueSecondaryDark = Color(0xFF38BDF8)

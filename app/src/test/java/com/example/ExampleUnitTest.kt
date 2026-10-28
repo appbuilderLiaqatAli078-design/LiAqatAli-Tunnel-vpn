@@ -779,4 +779,104 @@ class ExampleUnitTest {
         assertTrue(diagnosticMsg!!.contains("400 Bad Request"))
         serverThread.join(2000)
     }
+
+    @Test
+    fun testAllVmessUriAndBase64Formats() {
+        // 1. Exact Base64 URI/query VMess format from user's screenshot (including multi-line wrap)
+        val screenshotVmessUri = """
+            vmess://
+            djp2bWVzc0BnZWVrc3Zwbi5rZXZpbnRlY2h0dXRvcmlhbH
+            MuZnVuOjQ0Mz90eXBlPXdzJnBhdGg9L3ZtZXNzJnNlY3Vy
+            aXR5PXRscyZ1dWlkPWE0ODFjYzVlLTBlZGYtNDFiYy04NT
+            QwLWM2ODRiMjYwMDk2Mg==
+        """.trimIndent()
+        val res1 = ConfigParser.parse(screenshotVmessUri)
+        assertTrue("Screenshot VMess URI must parse successfully", res1 is ParseResult.Success)
+        val p1 = (res1 as ParseResult.Success).profile
+        assertEquals(ProtocolType.VMESS, p1.protocol)
+        assertEquals("geeksvpn.kevintechtutorials.fun", p1.server)
+        assertEquals(443, p1.port)
+        assertEquals("a481cc5e-0edf-41bc-8540-c684b2600962", p1.password)
+        assertEquals("ws", p1.network)
+        assertEquals("/vmess", p1.path)
+        assertEquals("tls", p1.security)
+        assertEquals("geeksvpn.kevintechtutorials.fun", p1.sni)
+
+        // Verify Xray config builds cleanly for this parsed VMess profile
+        val adapter = XrayEngineAdapter()
+        val xrayJson = JSONObject(adapter.buildXrayConfig(p1, 10808))
+        val firstOutbound = xrayJson.getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("vmess", firstOutbound.getString("protocol"))
+        val vnext = firstOutbound.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+        assertEquals("geeksvpn.kevintechtutorials.fun", vnext.getString("address"))
+        assertEquals(443, vnext.getInt("port"))
+        val userObj = vnext.getJSONArray("users").getJSONObject(0)
+        assertEquals("a481cc5e-0edf-41bc-8540-c684b2600962", userObj.getString("id"))
+        assertEquals("auto", userObj.getString("security"))
+
+        // 2. Standard v2rayNG JSON Base64 VMess URI
+        val v2rayNgJson = JSONObject().apply {
+            put("v", "2")
+            put("ps", "My-V2rayNG-Node")
+            put("add", "vmess.example.org")
+            put("port", "8443")
+            put("id", "a481cc5e-0edf-41bc-8540-c684b2600962")
+            put("aid", "0")
+            put("scy", "chacha20-poly1305")
+            put("net", "ws")
+            put("type", "none")
+            put("host", "cdn.example.org")
+            put("path", "/ws-vmess")
+            put("tls", "tls")
+            put("sni", "sni.example.org")
+        }
+        val v2rayNgUri = "vmess://" + android.util.Base64.encodeToString(
+            v2rayNgJson.toString().toByteArray(Charsets.UTF_8),
+            android.util.Base64.NO_WRAP
+        )
+        val res2 = ConfigParser.parse(v2rayNgUri)
+        assertTrue(res2 is ParseResult.Success)
+        val p2 = (res2 as ParseResult.Success).profile
+        assertEquals("My-V2rayNG-Node", p2.name)
+        assertEquals(ProtocolType.VMESS, p2.protocol)
+        assertEquals("vmess.example.org", p2.server)
+        assertEquals(8443, p2.port)
+        assertEquals("a481cc5e-0edf-41bc-8540-c684b2600962", p2.password)
+        assertEquals("ws", p2.network)
+        assertEquals("/ws-vmess", p2.path)
+        assertEquals("cdn.example.org", p2.wsHost)
+        assertEquals("sni.example.org", p2.sni)
+        assertEquals("tls", p2.security)
+        assertEquals("chacha20-poly1305", p2.encryption)
+
+        // 3. Plain VMess URI format
+        val plainVmessUri = "vmess://a481cc5e-0edf-41bc-8540-c684b2600962@plain.example.com:443?type=ws&security=tls&path=/v2&sni=plain.example.com#PlainVMess"
+        val res3 = ConfigParser.parse(plainVmessUri)
+        assertTrue(res3 is ParseResult.Success)
+        val p3 = (res3 as ParseResult.Success).profile
+        assertEquals("PlainVMess", p3.name)
+        assertEquals("plain.example.com", p3.server)
+        assertEquals(443, p3.port)
+        assertEquals("a481cc5e-0edf-41bc-8540-c684b2600962", p3.password)
+        assertEquals("ws", p3.network)
+        assertEquals("/v2", p3.path)
+        assertEquals("tls", p3.security)
+
+        // 4. Shadowrocket mixed Base64 + query VMess URI
+        val srPrefix = android.util.Base64.encodeToString(
+            "auto:a481cc5e-0edf-41bc-8540-c684b2600962@sr.example.com:443".toByteArray(Charsets.UTF_8),
+            android.util.Base64.NO_WRAP
+        )
+        val srUri = "vmess://$srPrefix?obfs=websocket&path=/sr-ws&tls=1&obfsParam=sr.example.com#ShadowrocketNode"
+        val res4 = ConfigParser.parse(srUri)
+        assertTrue(res4 is ParseResult.Success)
+        val p4 = (res4 as ParseResult.Success).profile
+        assertEquals("ShadowrocketNode", p4.name)
+        assertEquals("sr.example.com", p4.server)
+        assertEquals(443, p4.port)
+        assertEquals("a481cc5e-0edf-41bc-8540-c684b2600962", p4.password)
+        assertEquals("ws", p4.network)
+        assertEquals("/sr-ws", p4.path)
+        assertEquals("tls", p4.security)
+    }
 }
