@@ -98,6 +98,20 @@ class AegisVpnService : VpnService() {
         connectionJob?.cancel()
         connectionJob = serviceScope.launch {
             try {
+                // Enforce .ctp security locks before initiating connection
+                if (profile.isExpired) {
+                    throw IllegalStateException("Security Lock: This .ctp profile has expired")
+                }
+                if (profile.blockRoot && com.example.security.DeviceSecurityManager.isDeviceRooted(this@AegisVpnService)) {
+                    throw IllegalStateException("Security Lock: This .ctp profile blocks rooted devices")
+                }
+                if (profile.lockedHwid.isNotBlank()) {
+                    val deviceHwid = com.example.security.DeviceSecurityManager.getHardwareId(this@AegisVpnService)
+                    if (!profile.lockedHwid.equals(deviceHwid, ignoreCase = true)) {
+                        throw IllegalStateException("Security Lock: Profile locked to another Hardware ID ($deviceHwid)")
+                    }
+                }
+
                 // Normalize SSH profile if server address contains user/pass/port in target format (e.g. www.openx.com:80@Test:Test1)
                 var effectiveProfile = profile
                 if (effectiveProfile.protocol == ProtocolType.SSH && (effectiveProfile.server.contains("@") || effectiveProfile.server.startsWith("ssh://"))) {
@@ -112,13 +126,22 @@ class AegisVpnService : VpnService() {
                     }
                 }
 
+                AppLogger.registerSensitiveHosts(
+                    effectiveProfile.server,
+                    effectiveProfile.sni,
+                    effectiveProfile.wsHost,
+                    effectiveProfile.sshSni,
+                    effectiveProfile.proxyHost,
+                    effectiveProfile.sshChainProxyHost
+                )
+
                 activeProfileData = effectiveProfile
-                _vpnState.value = VpnState.Validating("Validating server ${effectiveProfile.server}:${effectiveProfile.port}")
+                _vpnState.value = VpnState.Validating("Validating server ••••••••••••")
                 updateNotification("Validating connection...", false)
 
                 // Basic address / port validation
                 if (effectiveProfile.server.isBlank() || effectiveProfile.port !in 1..65535) {
-                    throw IllegalArgumentException("Invalid server address or port: ${effectiveProfile.server}:${effectiveProfile.port}")
+                    throw IllegalArgumentException("Invalid server address or port: ••••••••••••")
                 }
 
                 _vpnState.value = VpnState.StartingEngine(

@@ -1,10 +1,14 @@
 package com.example.parser
 
+import android.content.Context
 import android.net.Uri
 import android.util.Base64
 import com.example.model.ProtocolType
 import com.example.model.SshTunnelMode
 import com.example.model.VpnProfile
+import com.example.security.CtpConfigCrypto
+import com.example.security.CtpDecryptResult
+import com.example.security.CtpExportOptions
 import org.json.JSONObject
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
@@ -12,12 +16,20 @@ import java.util.UUID
 
 sealed class ParseResult {
     data class Success(val profile: VpnProfile) : ParseResult()
-    data class Failure(val reason: String, val details: String? = null) : ParseResult()
+    data class Failure(
+        val reason: String,
+        val details: String? = null,
+        val requiresPassword: Boolean = false
+    ) : ParseResult()
 }
 
 object ConfigParser {
 
-    fun parse(rawInput: String): ParseResult {
+    fun parse(
+        rawInput: String,
+        unlockPassword: String = "",
+        context: Context? = null
+    ): ParseResult {
         val trimmed = rawInput.trim()
         if (trimmed.isEmpty()) {
             return ParseResult.Failure("Empty configuration string")
@@ -25,6 +37,7 @@ object ConfigParser {
 
         return try {
             when {
+                CtpConfigCrypto.isCtpContent(trimmed) -> parseCtp(trimmed, unlockPassword, context)
                 trimmed.startsWith("vmess://", ignoreCase = true) -> parseVmess(trimmed)
                 trimmed.startsWith("vless://", ignoreCase = true) -> parseVless(trimmed)
                 trimmed.startsWith("trojan://", ignoreCase = true) -> parseTrojan(trimmed)
@@ -32,10 +45,37 @@ object ConfigParser {
                 trimmed.startsWith("ssh://", ignoreCase = true) -> parseSshUri(trimmed)
                 trimmed.startsWith("{") -> parseJson(trimmed)
                 trimmed.contains("@") && !trimmed.contains("://") -> parseSshUri(trimmed)
-                else -> ParseResult.Failure("Unsupported format. Expected vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON.")
+                else -> ParseResult.Failure("Unsupported format. Expected .ctp file, vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON.")
             }
         } catch (e: Exception) {
             ParseResult.Failure("Failed to parse configuration: ${e.message}", e.stackTraceToString())
+        }
+    }
+
+    private fun parseCtp(
+        rawCtp: String,
+        unlockPassword: String,
+        context: Context?
+    ): ParseResult {
+        return when (val decrypted = CtpConfigCrypto.decryptCtpToProfileJson(rawCtp, unlockPassword, context)) {
+            is CtpDecryptResult.Success -> {
+                val parsed = parseJson(decrypted.profileJson)
+                if (parsed is ParseResult.Success) {
+                    // Always assign a fresh local ID on import if needed or keep profile fields
+                    ParseResult.Success(parsed.profile)
+                } else {
+                    parsed
+                }
+            }
+            is CtpDecryptResult.PasswordRequired -> {
+                ParseResult.Failure(
+                    reason = decrypted.hint,
+                    requiresPassword = true
+                )
+            }
+            is CtpDecryptResult.Failure -> {
+                ParseResult.Failure(reason = decrypted.reason)
+            }
         }
     }
 
@@ -406,7 +446,13 @@ object ConfigParser {
                     allowInsecureSsl = root.optBoolean("allowInsecureSsl", false),
                     dnsPrimary = root.optString("dnsPrimary", "1.1.1.1"),
                     dnsSecondary = root.optString("dnsSecondary", "8.8.8.8"),
-                    blockIpv6 = root.optBoolean("blockIpv6", true)
+                    blockIpv6 = root.optBoolean("blockIpv6", true),
+                    isLocked = root.optBoolean("isLocked", false),
+                    lockPasswordHash = root.optString("lockPasswordHash", ""),
+                    expiresAtMillis = root.optLong("expiresAtMillis", 0L),
+                    lockedHwid = root.optString("lockedHwid", ""),
+                    blockRoot = root.optBoolean("blockRoot", false),
+                    creatorMessage = root.optString("creatorMessage", "")
                 )
             )
         }
@@ -668,7 +714,21 @@ object ConfigParser {
             put("sshRemoteForwardPort", profile.sshRemoteForwardPort)
             put("sshRemoteListenPort", profile.sshRemoteListenPort)
             put("allowInsecureSsl", profile.allowInsecureSsl)
+            put("isLocked", profile.isLocked)
+            put("lockPasswordHash", profile.lockPasswordHash)
+            put("expiresAtMillis", profile.expiresAtMillis)
+            put("lockedHwid", profile.lockedHwid)
+            put("blockRoot", profile.blockRoot)
+            put("creatorMessage", profile.creatorMessage)
         }
         return obj.toString(2)
+    }
+
+    fun exportProfileToCtp(
+        profile: VpnProfile,
+        options: CtpExportOptions = CtpExportOptions()
+    ): String {
+        val baseJson = exportProfileToJson(profile)
+        return CtpConfigCrypto.encryptProfileJsonToCtp(baseJson, options)
     }
 }

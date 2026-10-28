@@ -104,6 +104,75 @@ fun ProfileEditScreen(
 
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    var isSessionUnlocked by remember { mutableStateOf(initialProfile?.isLocked != true) }
+    var unlockInput by remember { mutableStateOf("") }
+    var unlockError by remember { mutableStateOf<String?>(null) }
+
+    if (!isSessionUnlocked && initialProfile != null) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = Icons.Default.Lock,
+                contentDescription = "Locked .ctp",
+                tint = CyanPrimaryDark,
+                modifier = Modifier.size(56.dp)
+            )
+            Text(
+                text = "Locked .ctp Configuration",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "Server host (${initialProfile.maskedEndpoint}), credentials, and payload are encrypted and hidden by the configuration creator.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (initialProfile.lockPasswordHash.isNotBlank()) {
+                OutlinedTextField(
+                    value = unlockInput,
+                    onValueChange = {
+                        unlockInput = it
+                        unlockError = null
+                    },
+                    label = { Text("Enter Creator Unlock Password") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (unlockError != null) {
+                    Text(
+                        text = unlockError!!,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Button(
+                    onClick = {
+                        if (com.example.security.CtpConfigCrypto.verifyUnlockPassword(unlockInput, initialProfile.lockPasswordHash)) {
+                            isSessionUnlocked = true
+                        } else {
+                            unlockError = "Incorrect unlock password"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Unlock Editor")
+                }
+            }
+            OutlinedButton(
+                onClick = onCancel,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Back to Profiles")
+            }
+        }
+        return
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()

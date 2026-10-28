@@ -1,14 +1,15 @@
 package com.example.ui.screens
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,9 +23,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -33,10 +36,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +54,8 @@ import androidx.compose.ui.unit.dp
 import com.example.model.VpnProfile
 import com.example.parser.ConfigParser
 import com.example.parser.ParseResult
+import com.example.security.CtpConfigCrypto
+import com.example.security.DeviceSecurityManager
 import com.example.ui.components.GlassCard
 import com.example.ui.theme.ConnectedGreen
 import com.example.ui.theme.CyanPrimaryDark
@@ -67,21 +70,31 @@ fun ImportScreen(
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
+    var unlockPassword by remember { mutableStateOf("") }
+    var requiresPassword by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var isSuccess by remember { mutableStateOf(false) }
     var parsedProfile by remember { mutableStateOf<VpnProfile?>(null) }
 
-    fun validateAndParse(text: String) {
-        val result = ConfigParser.parse(text)
+    val deviceHwid = remember { DeviceSecurityManager.getHardwareId(context) }
+
+    fun validateAndParse(text: String, password: String = unlockPassword) {
+        val result = ConfigParser.parse(text, password, context)
         when (result) {
             is ParseResult.Success -> {
                 isSuccess = true
+                requiresPassword = false
                 parsedProfile = result.profile
-                statusMessage = "Valid ${result.profile.protocol.displayName} configuration"
+                statusMessage = if (result.profile.isLocked) {
+                    "Valid encrypted .ctp configuration (Locked)"
+                } else {
+                    "Valid ${result.profile.protocol.displayName} configuration"
+                }
             }
             is ParseResult.Failure -> {
                 isSuccess = false
                 parsedProfile = null
+                requiresPassword = result.requiresPassword || CtpConfigCrypto.isCtpContent(text)
                 statusMessage = result.reason
             }
         }
@@ -95,10 +108,10 @@ fun ImportScreen(
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     val content = stream.bufferedReader().readText()
                     inputText = content
-                    validateAndParse(content)
+                    validateAndParse(content, unlockPassword)
                 }
             } catch (e: Exception) {
-                statusMessage = "Error reading file: ${e.message}"
+                statusMessage = "Error reading .ctp file: ${e.message}"
                 isSuccess = false
             }
         }
@@ -112,18 +125,58 @@ fun ImportScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "Import Configuration",
+            text = "Import .ctp Configuration",
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onBackground
         )
 
         Text(
-            text = "Import configs from file, clipboard, or paste standard vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON configurations.",
+            text = "Import encrypted Custom Tunnel Pro (.ctp) files, clipboard configs, or standard vmess://, vless://, trojan://, ss://, ssh://, or Xray JSON configurations.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // Actions: Clipboard + Choose File
+        // Device HWID Helper Card for HWID-locked .ctp files
+        GlassCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Device HWID", deviceHwid))
+                    Toast.makeText(context, "Copied HWID: $deviceHwid", Toast.LENGTH_SHORT).show()
+                },
+            cornerRadius = 12.dp
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Your Device Hardware ID (HWID)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = deviceHwid,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = CyanPrimaryDark
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "Copy HWID",
+                    tint = CyanPrimaryDark,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        // Actions: Clipboard + Choose .ctp File
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -135,7 +188,7 @@ fun ImportScreen(
                     if (clip != null && clip.itemCount > 0) {
                         val pasted = clip.getItemAt(0).text?.toString() ?: ""
                         inputText = pasted
-                        validateAndParse(pasted)
+                        validateAndParse(pasted, unlockPassword)
                     }
                 },
                 modifier = Modifier
@@ -155,34 +208,54 @@ fun ImportScreen(
             ) {
                 Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Choose File", maxLines = 1)
+                Text("Choose .ctp File", maxLines = 1)
             }
         }
 
-        // Configuration Text Area
+        // Password input if .ctp file requires an unlock password
+        AnimatedVisibility(visible = requiresPassword || CtpConfigCrypto.isCtpContent(inputText)) {
+            OutlinedTextField(
+                value = unlockPassword,
+                onValueChange = {
+                    unlockPassword = it
+                    if (inputText.isNotBlank()) {
+                        validateAndParse(inputText, it)
+                    }
+                },
+                label = { Text(".ctp Unlock Password (If Protected)") },
+                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("ctp_unlock_password_input"),
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
+
+        // Configuration Text Area (masks raw content if it's an encrypted .ctp blob)
         OutlinedTextField(
-            value = inputText,
+            value = if (CtpConfigCrypto.isCtpContent(inputText)) "CTP2:[ENCRYPTED .CTP CONTAINER LOADED]" else inputText,
             onValueChange = {
                 inputText = it
                 if (it.isNotBlank()) {
-                    validateAndParse(it)
+                    validateAndParse(it, unlockPassword)
                 } else {
                     statusMessage = null
                     parsedProfile = null
                 }
             },
-            label = { Text("Configuration String or JSON") },
-            placeholder = { Text("vmess://..., vless://..., trojan://..., ssh://..., or {\"outbounds\": ...}") },
+            label = { Text("Configuration (.ctp, URI, or JSON)") },
+            placeholder = { Text("CTP2:..., vless://..., vmess://..., trojan://..., ssh://...") },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(180.dp)
+                .height(150.dp)
                 .testTag("import_text_input"),
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             shape = RoundedCornerShape(16.dp),
-            maxLines = 10
+            maxLines = 8
         )
 
-        // Validation Result Banner
+        // Validation Result Banner (always masks server host outside Editor)
         AnimatedVisibility(visible = statusMessage != null) {
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -201,7 +274,7 @@ fun ImportScreen(
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isSuccess) "Configuration Valid" else "Validation Error",
+                            text = if (isSuccess) "Configuration Valid" else "Validation / Lock Status",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = if (isSuccess) ConnectedGreen else DisconnectedRed,
                             maxLines = 1,
@@ -216,7 +289,7 @@ fun ImportScreen(
                         )
                         if (parsedProfile != null) {
                             Text(
-                                text = "Target: ${parsedProfile?.server}:${parsedProfile?.port} (${parsedProfile?.protocol?.displayName})",
+                                text = "Endpoint: ${parsedProfile?.maskedEndpoint} (${parsedProfile?.protocol?.displayName})",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
@@ -230,7 +303,7 @@ fun ImportScreen(
 
         // Example Chips
         Text(
-            text = "Supported Formats:",
+            text = "Supported Formats (.ctp, VLESS, Trojan, SSH):",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

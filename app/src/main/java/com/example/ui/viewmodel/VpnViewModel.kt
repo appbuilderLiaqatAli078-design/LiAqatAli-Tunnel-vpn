@@ -17,10 +17,8 @@ import com.example.parser.ConfigParser
 import com.example.parser.ParseResult
 import com.example.vpn.AegisVpnService
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class VpnViewModel(application: Application) : AndroidViewModel(application) {
@@ -43,16 +41,32 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch {
             profiles.collect { list ->
-                if (_selectedProfile.value == null && list.isNotEmpty()) {
-                    _selectedProfile.value = list.first()
-                    AegisVpnService.setActiveProfile(list.first())
+                if (list.isEmpty()) {
+                    _selectedProfile.value = null
+                    return@collect
                 }
+
+                // 1. Prefer currently active VPN service profile if tunnel is running,
+                // 2. Otherwise use in-memory selection or persisted selectedProfileId from disk.
+                val runningProfileId = if (vpnState.value.isConnected || vpnState.value.isBusy) {
+                    AegisVpnService.activeProfile.value?.id
+                } else null
+
+                val targetId = runningProfileId
+                    ?: _selectedProfile.value?.id
+                    ?: profileRepository.getSelectedProfileId()
+
+                val matched = targetId?.let { id -> list.find { it.id == id } } ?: list.first()
+                _selectedProfile.value = matched
+                profileRepository.setSelectedProfileId(matched.id)
+                AegisVpnService.setActiveProfile(matched)
             }
         }
     }
 
     fun selectProfile(profile: VpnProfile) {
         _selectedProfile.value = profile
+        profileRepository.setSelectedProfileId(profile.id)
         AegisVpnService.setActiveProfile(profile)
         AppLogger.i(TAG, "Selected profile: ${profile.name} (${profile.protocol.displayName})")
     }
@@ -77,9 +91,11 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveProfile(profile: VpnProfile) {
+        val isNewProfile = profiles.value.none { it.id == profile.id }
         profileRepository.saveProfile(profile)
-        if (_selectedProfile.value?.id == profile.id || _selectedProfile.value == null) {
+        if (isNewProfile || _selectedProfile.value?.id == profile.id || _selectedProfile.value == null) {
             _selectedProfile.value = profile
+            profileRepository.setSelectedProfileId(profile.id)
             AegisVpnService.setActiveProfile(profile)
         }
         AppLogger.i(TAG, "Saved profile: ${profile.name}")
@@ -88,19 +104,25 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteProfile(id: String) {
         profileRepository.deleteProfile(id)
         if (_selectedProfile.value?.id == id) {
-            _selectedProfile.value = profiles.value.firstOrNull { it.id != id }
-            AegisVpnService.setActiveProfile(_selectedProfile.value)
+            val next = profiles.value.firstOrNull { it.id != id }
+            _selectedProfile.value = next
+            profileRepository.setSelectedProfileId(next?.id)
+            AegisVpnService.setActiveProfile(next)
         }
         AppLogger.i(TAG, "Deleted profile id: $id")
     }
 
     fun duplicateProfile(profile: VpnProfile) {
+        if (profile.isLocked) {
+            AppLogger.w(TAG, "Cannot duplicate locked .ctp profile: ${profile.name}")
+            return
+        }
         val dup = profileRepository.duplicateProfile(profile)
         AppLogger.i(TAG, "Duplicated profile: ${dup.name}")
     }
 
-    fun importConfig(rawText: String): ParseResult {
-        val result = ConfigParser.parse(rawText)
+    fun importConfig(rawText: String, unlockPassword: String = ""): ParseResult {
+        val result = ConfigParser.parse(rawText, unlockPassword, getApplication())
         if (result is ParseResult.Success) {
             saveProfile(result.profile)
             selectProfile(result.profile)

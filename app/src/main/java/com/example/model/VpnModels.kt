@@ -132,8 +132,21 @@ data class VpnProfile(
     val perAppProxy: Boolean = false,
     val selectedApps: List<String> = emptyList(),
     val lastPingMs: Long? = null,
-    val createdAt: Long = System.currentTimeMillis()
-)
+    val createdAt: Long = System.currentTimeMillis(),
+    // .ctp Security & Lock Properties
+    val isLocked: Boolean = false,
+    val lockPasswordHash: String = "",
+    val expiresAtMillis: Long = 0L,
+    val lockedHwid: String = "",
+    val blockRoot: Boolean = false,
+    val creatorMessage: String = ""
+) {
+    val maskedEndpoint: String
+        get() = "••••••••••••"
+
+    val isExpired: Boolean
+        get() = expiresAtMillis > 0L && System.currentTimeMillis() > expiresAtMillis
+}
 
 data class AppSettings(
     val theme: String = "system",

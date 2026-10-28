@@ -1,21 +1,23 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Custom Tunnel Pro — Security & Obfuscation Rules
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Hide original source file names and strip debug attributes
+-renamesourcefileattribute SourceFile
+-overloadaggressively
+-repackageclasses 'o.ctp'
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep Native JNI Bridges (Xray Core & HEV SOCKS5 Tunnel)
+-keep class hev.socks5.tunnel.** { *; }
+-keep class libv2ray.** { *; }
+-keep class go.** { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Keep JSch SSH reflection classes
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.newsclub.net.unix.**
+
+# Strip verbose debug logs in release builds
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+}

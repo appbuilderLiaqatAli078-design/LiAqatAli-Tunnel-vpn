@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.model.ProtocolType
 import com.example.model.VpnProfile
 import com.example.parser.ConfigParser
+import com.example.security.CtpConfigCrypto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,11 +15,13 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 class ProfileRepository(private val context: Context) {
     private val TAG = "ProfileRepo"
     private val file = File(context.filesDir, "vpn_profiles.json")
+    private val prefs = context.getSharedPreferences("ctp_profile_prefs", Context.MODE_PRIVATE)
 
     private val _profiles = MutableStateFlow<List<VpnProfile>>(emptyList())
     val profiles: StateFlow<List<VpnProfile>> = _profiles.asStateFlow()
@@ -27,41 +30,85 @@ class ProfileRepository(private val context: Context) {
         loadProfiles()
     }
 
+    fun getSelectedProfileId(): String? {
+        return prefs.getString(KEY_SELECTED_PROFILE_ID, null)
+    }
+
+    fun setSelectedProfileId(profileId: String?) {
+        prefs.edit().putString(KEY_SELECTED_PROFILE_ID, profileId).apply()
+    }
+
+    private fun registerHostsForMasking(list: List<VpnProfile>) {
+        list.forEach { p ->
+            AppLogger.registerSensitiveHosts(
+                p.server,
+                p.sni,
+                p.wsHost,
+                p.sshSni,
+                p.proxyHost,
+                p.sshChainProxyHost
+            )
+        }
+    }
+
     private fun loadProfiles() {
         if (!file.exists()) {
             val starterProfiles = getStarterProfiles()
+            registerHostsForMasking(starterProfiles)
             _profiles.value = starterProfiles
+            if (getSelectedProfileId() == null && starterProfiles.isNotEmpty()) {
+                setSelectedProfileId(starterProfiles.first().id)
+            }
             saveProfilesToFile(starterProfiles)
             return
         }
 
         try {
-            val text = file.readText()
-            val array = JSONArray(text)
+            val rawText = file.readText()
+            val decryptedJson = CtpConfigCrypto.decryptLocalStore(rawText, context)
+            val array = JSONArray(decryptedJson)
             val list = mutableListOf<VpnProfile>()
             for (i in 0 until array.length()) {
                 val objStr = array.getJSONObject(i).toString()
-                val parsed = ConfigParser.parse(objStr)
+                val parsed = ConfigParser.parse(objStr, context = context)
                 if (parsed is com.example.parser.ParseResult.Success) {
                     list.add(parsed.profile)
                 }
             }
             if (list.isEmpty()) {
                 val starterProfiles = getStarterProfiles()
+                registerHostsForMasking(starterProfiles)
                 _profiles.value = starterProfiles
+                if (getSelectedProfileId() == null && starterProfiles.isNotEmpty()) {
+                    setSelectedProfileId(starterProfiles.first().id)
+                }
                 saveProfilesToFile(starterProfiles)
             } else {
+                registerHostsForMasking(list)
                 _profiles.value = list
+                // Re-save if file was legacy unencrypted JSON
+                if (!rawText.trim().startsWith("CTP_STORE_V2:")) {
+                    saveProfilesToFile(list)
+                }
             }
         } catch (e: Exception) {
             AppLogger.e(TAG, "Failed to load profiles, generating starter profiles: ${e.message}")
             val starter = getStarterProfiles()
+            registerHostsForMasking(starter)
             _profiles.value = starter
             saveProfilesToFile(starter)
         }
     }
 
     fun saveProfile(profile: VpnProfile) {
+        AppLogger.registerSensitiveHosts(
+            profile.server,
+            profile.sni,
+            profile.wsHost,
+            profile.sshSni,
+            profile.proxyHost,
+            profile.sshChainProxyHost
+        )
         val current = _profiles.value.toMutableList()
         val index = current.indexOfFirst { it.id == profile.id }
         if (index >= 0) {
@@ -76,6 +123,9 @@ class ProfileRepository(private val context: Context) {
     fun deleteProfile(id: String) {
         val updated = _profiles.value.filterNot { it.id == id }
         _profiles.value = updated
+        if (getSelectedProfileId() == id) {
+            setSelectedProfileId(updated.firstOrNull()?.id)
+        }
         saveProfilesToFile(updated)
     }
 
@@ -96,7 +146,8 @@ class ProfileRepository(private val context: Context) {
                 val jsonStr = ConfigParser.exportProfileToJson(profile)
                 array.put(org.json.JSONObject(jsonStr))
             }
-            FileOutputStream(file).use { it.write(array.toString(2).toByteArray()) }
+            val encryptedPayload = CtpConfigCrypto.encryptLocalStore(array.toString(), context)
+            FileOutputStream(file).use { it.write(encryptedPayload.toByteArray(StandardCharsets.UTF_8)) }
         } catch (e: Exception) {
             AppLogger.e(TAG, "Error saving profiles to file: ${e.message}")
         }
@@ -115,17 +166,21 @@ class ProfileRepository(private val context: Context) {
             saveProfile(updated)
             latency
         } catch (e: Exception) {
-            AppLogger.w(TAG, "Ping failed for ${profile.name} (${profile.server}:${profile.port}): ${e.message}")
+            AppLogger.w(TAG, "Ping failed for ${profile.name} (••••••••••••): ${e.message}")
             val updated = profile.copy(lastPingMs = -1L)
             saveProfile(updated)
             null
         }
     }
 
+    private fun deterministicUuid(seed: String): String {
+        return UUID.nameUUIDFromBytes(seed.toByteArray(StandardCharsets.UTF_8)).toString()
+    }
+
     private fun getStarterProfiles(): List<VpnProfile> {
         return listOf(
             VpnProfile(
-                id = UUID.randomUUID().toString(),
+                id = deterministicUuid("starter-cloudflare-vless-ws"),
                 name = "Cloudflare VLESS WS Template",
                 protocol = ProtocolType.VLESS,
                 server = "104.16.132.229",
@@ -139,7 +194,7 @@ class ProfileRepository(private val context: Context) {
                 dnsSecondary = "8.8.8.8"
             ),
             VpnProfile(
-                id = UUID.randomUUID().toString(),
+                id = deterministicUuid("starter-ssh-custom-injector"),
                 name = "SSH HTTP Custom Injector Template",
                 protocol = ProtocolType.SSH,
                 server = "128.199.192.1",
@@ -152,7 +207,7 @@ class ProfileRepository(private val context: Context) {
                 proxyPort = 0
             ),
             VpnProfile(
-                id = UUID.randomUUID().toString(),
+                id = deterministicUuid("starter-ssh-wss"),
                 name = "SSH Secure WebSocket (WSS)",
                 protocol = ProtocolType.SSH,
                 server = "ssh-wss.customtunnelpro.org",
@@ -164,7 +219,7 @@ class ProfileRepository(private val context: Context) {
                 sshWsPath = "/ssh"
             ),
             VpnProfile(
-                id = UUID.randomUUID().toString(),
+                id = deterministicUuid("starter-trojan-gateway"),
                 name = "Trojan Secure Gateway",
                 protocol = ProtocolType.TROJAN,
                 server = "gateway.customtunnelpro.org",
@@ -174,5 +229,9 @@ class ProfileRepository(private val context: Context) {
                 sni = "gateway.customtunnelpro.org"
             )
         )
+    }
+
+    companion object {
+        private const val KEY_SELECTED_PROFILE_ID = "selected_profile_id"
     }
 }

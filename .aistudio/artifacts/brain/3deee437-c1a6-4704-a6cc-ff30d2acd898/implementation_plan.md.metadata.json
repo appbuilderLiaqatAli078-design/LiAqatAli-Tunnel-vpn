@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for fixing profile selection persistence, masking hosts outside the editor, adding encrypted .ctp custom configuration file export/import with user-configurable security locks, and hardening app and local storage security.",
+  "updatedAt":  "2026-10-28T11:08:41.420522225Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

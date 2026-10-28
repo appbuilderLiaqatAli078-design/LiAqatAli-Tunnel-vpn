@@ -114,10 +114,10 @@ fun ConnectionDetailsScreen(
                 if (selectedProfile?.protocol == com.example.model.ProtocolType.SSH) {
                     DetailRow("SSH Tunnel Mode", selectedProfile?.sshMode?.displayName ?: "Direct")
                     if (selectedProfile?.proxyHost?.isNotBlank() == true) {
-                        DetailRow("Outbound Proxy", "${selectedProfile?.proxyHost}:${selectedProfile?.proxyPort}")
+                        DetailRow("Outbound Proxy", "••••••••••••")
                     }
                     if (selectedProfile?.sshSni?.isNotBlank() == true) {
-                        DetailRow("TLS SNI Host", selectedProfile?.sshSni ?: "")
+                        DetailRow("TLS SNI Host", "••••••••••••")
                     }
                 }
                 DetailRow("TUN Forwarder", "HEV SOCKS5 Tunnel v2.19.3 (C/lwIP)")

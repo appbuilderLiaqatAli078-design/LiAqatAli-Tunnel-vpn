@@ -5,9 +5,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +33,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,8 +42,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.core.content.FileProvider
 import com.example.model.ProtocolType
 import com.example.model.VpnProfile
+import com.example.parser.ParseResult
 import com.example.ui.screens.ConnectionDetailsScreen
 import com.example.ui.screens.DnsRoutingScreen
 import com.example.ui.screens.HomeScreen
@@ -54,6 +56,8 @@ import com.example.ui.screens.ProfilesScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.AegisTunnelTheme
 import com.example.ui.viewmodel.VpnViewModel
+import java.io.File
+import java.nio.charset.StandardCharsets
 
 class MainActivity : ComponentActivity() {
     private val viewModel: VpnViewModel by viewModels()
@@ -61,6 +65,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleIncomingCtpIntent(intent)
 
         setContent {
             val settings by viewModel.settings.collectAsState()
@@ -73,6 +78,53 @@ class MainActivity : ComponentActivity() {
             AegisTunnelTheme(darkTheme = darkTheme) {
                 MainAppContent(viewModel = viewModel)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingCtpIntent(intent)
+    }
+
+    private fun handleIncomingCtpIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        try {
+            val rawContent = if (uri.scheme.equals("ctp", ignoreCase = true)) {
+                uri.toString()
+            } else {
+                contentResolver.openInputStream(uri)?.use { stream ->
+                    stream.bufferedReader().readText()
+                } ?: return
+            }
+
+            if (rawContent.isNotBlank()) {
+                when (val res = viewModel.importConfig(rawContent)) {
+                    is ParseResult.Success -> {
+                        Toast.makeText(
+                            this,
+                            "Imported .ctp profile: ${res.profile.name}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    is ParseResult.Failure -> {
+                        if (res.requiresPassword) {
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("CTP Config", rawContent))
+                            Toast.makeText(
+                                this,
+                                "Password-protected .ctp file copied to clipboard. Open Import to unlock.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } else {
+                            Toast.makeText(this, res.reason, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed to open .ctp file: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 }
@@ -94,6 +146,20 @@ fun MainAppContent(viewModel: VpnViewModel) {
     var isCreatingNew by remember { mutableStateOf(false) }
     var newProtocol by remember { mutableStateOf(ProtocolType.VLESS) }
     var isImporting by remember { mutableStateOf(false) }
+
+    // Protect ProfileEditScreen with FLAG_SECURE against screen capture / credential scraping
+    val isInEditor = editingProfile != null || isCreatingNew
+    DisposableEffect(isInEditor) {
+        val window = (context as? Activity)?.window
+        if (isInEditor) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
 
     // VPN Permission Launcher
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
@@ -131,16 +197,40 @@ fun MainAppContent(viewModel: VpnViewModel) {
         }
     }
 
-    val onExportAction: (String) -> Unit = { exportedContent ->
+    val onExportAction: (String, String?) -> Unit = { exportedContent, fileName ->
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("VPN Config", exportedContent))
-        Toast.makeText(context, "Config copied to clipboard", Toast.LENGTH_SHORT).show()
+        clipboard.setPrimaryClip(ClipData.newPlainText("CTP VPN Config", exportedContent))
 
-        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, exportedContent)
+        try {
+            val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+            val safeName = (fileName ?: "tunnel.ctp").let {
+                if (it.endsWith(".ctp", ignoreCase = true)) it else "$it.ctp"
+            }
+            val ctpFile = File(exportDir, safeName)
+            ctpFile.writeText(exportedContent, StandardCharsets.UTF_8)
+
+            val contentUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                ctpFile
+            )
+
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/octet-stream"
+                putExtra(Intent.EXTRA_STREAM, contentUri)
+                putExtra(Intent.EXTRA_TEXT, exportedContent)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            Toast.makeText(context, "Encrypted .ctp config ready to share", Toast.LENGTH_SHORT).show()
+            context.startActivity(Intent.createChooser(shareIntent, "Share .ctp VPN Config"))
+        } catch (e: Exception) {
+            val fallbackIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, exportedContent)
+            }
+            Toast.makeText(context, ".ctp config copied to clipboard", Toast.LENGTH_SHORT).show()
+            context.startActivity(Intent.createChooser(fallbackIntent, "Share .ctp VPN Config"))
         }
-        context.startActivity(Intent.createChooser(shareIntent, "Share VPN Profile"))
     }
 
     Scaffold(

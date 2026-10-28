@@ -252,12 +252,34 @@ fun HomeScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = selectedProfile?.let { "${it.server}:${it.port}" } ?: "tap to select",
+                                text = selectedProfile?.maskedEndpoint ?: "tap to select",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
+                                modifier = Modifier.weight(1f, fill = false).testTag("home_masked_host")
+                            )
+                            if (selectedProfile?.isLocked == true) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = CyanPrimaryDark.copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = "LOCKED .CTP",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                        color = CyanPrimaryDark,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
+                        if (!selectedProfile?.creatorMessage.isNullOrBlank()) {
+                            Text(
+                                text = selectedProfile?.creatorMessage ?: "",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
