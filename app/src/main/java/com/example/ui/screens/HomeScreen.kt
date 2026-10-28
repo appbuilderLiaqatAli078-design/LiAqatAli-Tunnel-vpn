@@ -196,13 +196,22 @@ fun HomeScreen(
             modifier = Modifier.padding(vertical = 12.dp)
         )
 
-        // Selected Profile Card
+        // Selected Profile Card with interactive finger-swipe liquid wave
+        val profileLiquidColor = if (vpnState.isConnected) {
+            ConnectedGreen
+        } else {
+            Color(selectedProfile?.protocol?.badgeColorHex ?: 0xFF00E5FF)
+        }
         GlassCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onNavigateToProfiles() }
                 .testTag("selected_profile_card"),
-            cornerRadius = 20.dp
+            cornerRadius = 20.dp,
+            enableLiquidWave = true,
+            liquidColor = profileLiquidColor,
+            liquidFillFraction = if (vpnState.isConnected) 0.42f else 0.28f,
+            liquidStateKey = "${selectedProfile?.id}_${vpnState.isConnected}"
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -321,7 +330,11 @@ fun HomeScreen(
         // Quick Security & Engine Overview Pills
         GlassCard(
             modifier = Modifier.fillMaxWidth(),
-            cornerRadius = 16.dp
+            cornerRadius = 16.dp,
+            enableLiquidWave = true,
+            liquidColor = if (vpnState.isConnected) ConnectedGreen else CyanPrimaryDark,
+            liquidFillFraction = 0.25f,
+            liquidStateKey = vpnState.isConnected
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(

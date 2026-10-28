@@ -289,19 +289,24 @@ class SshEngineAdapter : VpnEngineAdapter {
             }
             val targetPort = input.readUnsignedShort()
 
+            // Prune already closed channels to prevent unbounded memory growth during long sessions
+            activeChannels.removeAll { it.isClosed || !it.isConnected }
+
             // Open SSH Direct-TCPIP Channel
             val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
             channel.setHost(targetHost)
             channel.setPort(targetPort)
+
+            // Send SOCKS5 success response BEFORE binding JSch streams to clientSocket
+            // so remote payload bytes never interleave with the SOCKS5 handshake reply
+            output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            output.flush()
+
             channel.setInputStream(clientSocket.getInputStream())
             channel.setOutputStream(clientSocket.getOutputStream())
             channel.connect(8000)
 
             activeChannels.add(channel)
-
-            // Success response
-            output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-            output.flush()
         } catch (e: Exception) {
             try { clientSocket.close() } catch (ignored: Exception) {}
         }

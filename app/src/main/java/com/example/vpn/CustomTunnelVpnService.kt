@@ -148,6 +148,9 @@ class CustomTunnelVpnService : VpnService() {
                     if (effectiveProfile.protocol == ProtocolType.SSH) "SSH Tunnel Engine" else "Xray Core Engine"
                 )
 
+                // Clean up any prior session resources synchronously before establishing a new TUN/engine
+                cleanup()
+
                 // Establish TUN interface
                 val tunPfd = establishTun(effectiveProfile)
                 if (tunPfd == null) {
@@ -265,9 +268,11 @@ class CustomTunnelVpnService : VpnService() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
             while (isActive && _vpnState.value is VpnState.Connected) {
-                delay(1000)
+                delay(1500)
                 val stats = HevTunnelManager.getStats()
-                _trafficStats.value = stats
+                if (stats != _trafficStats.value) {
+                    _trafficStats.value = stats
+                }
             }
         }
     }
@@ -287,13 +292,16 @@ class CustomTunnelVpnService : VpnService() {
     private fun cleanup() {
         statsJob?.cancel()
         statsJob = null
-        try {
-            serviceScope.launch {
-                currentEngine?.stop()
-                currentEngine = null
+        val engineToStop = currentEngine
+        currentEngine = null
+        if (engineToStop != null) {
+            try {
+                serviceScope.launch {
+                    engineToStop.stop()
+                }
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Error stopping current engine: ${e.message}")
             }
-        } catch (e: Exception) {
-            AppLogger.w(TAG, "Error stopping current engine: ${e.message}")
         }
 
         try {
@@ -375,6 +383,8 @@ class CustomTunnelVpnService : VpnService() {
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(isConnected)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setContentIntent(openPendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
 
