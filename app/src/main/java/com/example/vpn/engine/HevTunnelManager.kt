@@ -13,28 +13,45 @@ object HevTunnelManager {
     private var lastTxBytes = 0L
     private var lastTimestamp = 0L
 
-    fun start(context: Context, tunFd: Int, socksAddress: String = "127.0.0.1", socksPort: Int = 10808): Boolean {
+    fun buildConfigYaml(
+        socksAddress: String = "127.0.0.1",
+        socksPort: Int = 10808,
+        udpMode: String = "udp"
+    ): String {
+        val normalizedUdp = if (udpMode == "udp" || udpMode == "tcp") udpMode else "udp"
+        return """
+            tunnel:
+              name: tun0
+              mtu: 1500
+              multi-queue: false
+              ipv4: 198.18.0.1
+            socks5:
+              port: $socksPort
+              address: '$socksAddress'
+              udp: '$normalizedUdp'
+            misc:
+              task-stack-size: 81920
+              connect-timeout: 10000
+              tcp-read-write-timeout: 300000
+              udp-read-write-timeout: 60000
+              log-level: warn
+        """.trimIndent()
+    }
+
+    fun start(
+        context: Context,
+        tunFd: Int,
+        socksAddress: String = "127.0.0.1",
+        socksPort: Int = 10808,
+        udpMode: String = "tcp"
+    ): Boolean {
         return try {
             val configFile = File(context.cacheDir, "hev_socks5.yml")
-            val yamlConfig = """
-                tunnel:
-                  name: tun0
-                  mtu: 1500
-                  ipv4: 198.18.0.1
-                socks5:
-                  port: $socksPort
-                  address: $socksAddress
-                  udp: 'tcp'
-                misc:
-                  task-stack-size: 81920
-                  connect-timeout: 8000
-                  read-write-timeout: 60000
-                  log-level: warn
-            """.trimIndent()
+            val yamlConfig = buildConfigYaml(socksAddress, socksPort, udpMode)
 
             FileOutputStream(configFile).use { it.write(yamlConfig.toByteArray()) }
 
-            AppLogger.i(TAG, "Starting HEV SOCKS5 Tunnel forwarder pointing to $socksAddress:$socksPort (tunFd=$tunFd)")
+            AppLogger.i(TAG, "Starting HEV SOCKS5 Tunnel forwarder pointing to $socksAddress:$socksPort (udp=$udpMode, tunFd=$tunFd)")
             val success = TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
             if (success) {
                 AppLogger.i(TAG, "HEV SOCKS5 Tunnel forwarder started successfully")

@@ -86,14 +86,20 @@ data class VpnProfile(
     val port: Int,
     val password: String = "", // UUID for VMess/VLESS, password for Trojan/Shadowsocks/SSH
     val security: String = "none", // none, tls, reality
-    val network: String = "tcp", // tcp, ws, grpc
+    val network: String = "tcp", // tcp, ws, grpc, httpupgrade, xhttp, h2, kcp
     val path: String = "",
     val sni: String = "",
+    val wsHost: String = "", // HTTP / WebSocket Host header when distinct from TLS SNI
+    val headerType: String = "none", // none, http (for TCP HTTP header obfuscation)
+    val grpcMode: String = "gun", // gun, multi
+    val grpcAuthority: String = "",
     val publicKey: String = "",
     val shortId: String = "",
+    val spiderX: String = "", // REALITY spiderX (spx)
     val fingerprint: String = "chrome",
-    val alpn: String = "h2,http/1.1",
+    val alpn: String = "",
     val flow: String = "",
+    val encryption: String = "none",
     // SSH Specific
     val sshUsername: String = "",
     val sshPayload: String = "", // e.g. CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf][crlf]

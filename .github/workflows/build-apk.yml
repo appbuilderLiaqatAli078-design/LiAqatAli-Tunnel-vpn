@@ -54,7 +54,7 @@ jobs:
             echo "Fetching hev-socks5-tunnel.aar..."
             curl -L -s -o app/libs/hev-socks5-tunnel.aar https://github.com/heiher/hev-socks5-tunnel/releases/download/2.19.3/hev-socks5-tunnel.aar
           fi
-          if [ ! -f "app/libs/libv2ray.aar" ]; then
+          if [ ! -f "app/libs/libv2ray.aar" ] && [ ! -f "app/libs/libv2ray-classes.jar" ]; then
             echo "Fetching libv2ray.aar..."
             curl -L -s -o app/libs/libv2ray.aar https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.10.21/libv2ray.aar
           fi

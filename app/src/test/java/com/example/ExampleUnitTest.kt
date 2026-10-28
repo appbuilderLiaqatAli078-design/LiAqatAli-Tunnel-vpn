@@ -532,4 +532,206 @@ class ExampleUnitTest {
             throw e
         }
     }
+
+    @Test
+    fun testVlessWsTlsDistinctHostAndSniAndAlpnSafeguard() {
+        val uri = "vless://d342d110-d4a3-4513-bfa6-07a5e0f0ff37@104.16.132.229:443" +
+            "?encryption=none&security=tls&type=ws&sni=sni.front-domain.com" +
+            "&host=ws.cdn-worker.dev&path=%2Fvless-ws%3Fed%3D2048&fp=firefox&allowInsecure=1#CF-EdgeTunnel"
+
+        val result = ConfigParser.parse(uri)
+        assertTrue(result is ParseResult.Success)
+        val profile = (result as ParseResult.Success).profile
+
+        assertEquals("CF-EdgeTunnel", profile.name)
+        assertEquals("104.16.132.229", profile.server)
+        assertEquals(443, profile.port)
+        assertEquals("d342d110-d4a3-4513-bfa6-07a5e0f0ff37", profile.password)
+        assertEquals("tls", profile.security)
+        assertEquals("ws", profile.network)
+        assertEquals("sni.front-domain.com", profile.sni)
+        assertEquals("ws.cdn-worker.dev", profile.wsHost)
+        assertEquals("/vless-ws?ed=2048", profile.path)
+        assertEquals("firefox", profile.fingerprint)
+        assertTrue(profile.allowInsecureSsl)
+
+        val adapter = XrayEngineAdapter()
+        val configJson = JSONObject(adapter.buildXrayConfig(profile, 10808))
+        val proxyOutbound = configJson.getJSONArray("outbounds").getJSONObject(0)
+        val streamSettings = proxyOutbound.getJSONObject("streamSettings")
+
+        val wsSettings = streamSettings.getJSONObject("wsSettings")
+        assertEquals("/vless-ws?ed=2048", wsSettings.getString("path"))
+        assertEquals("ws.cdn-worker.dev", wsSettings.getString("host"))
+        assertEquals("ws.cdn-worker.dev", wsSettings.getJSONObject("headers").getString("Host"))
+
+        val tlsSettings = streamSettings.getJSONObject("tlsSettings")
+        assertEquals("sni.front-domain.com", tlsSettings.getString("serverName"))
+        assertEquals("firefox", tlsSettings.getString("fingerprint"))
+        assertTrue(tlsSettings.getBoolean("allowInsecure"))
+        // WebSocket over TLS must use http/1.1 ALPN so HTTP/2 does not break HTTP/1.1 Upgrade
+        val alpn = tlsSettings.getJSONArray("alpn")
+        assertEquals(1, alpn.length())
+        assertEquals("http/1.1", alpn.getString(0))
+    }
+
+    @Test
+    fun testVlessRealityVisionConfigParsingAndGeneration() {
+        val uri = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@198.51.100.42:443" +
+            "?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com" +
+            "&fp=chrome&pbk=m1_23AbCdEfGhIjKlMnOpQrStUvWxYz0123456789Ab&sid=6ba85179e30d4fc2&spx=%2Fdocs&type=tcp#RealityVision"
+
+        val result = ConfigParser.parse(uri)
+        assertTrue(result is ParseResult.Success)
+        val profile = (result as ParseResult.Success).profile
+
+        assertEquals("RealityVision", profile.name)
+        assertEquals("reality", profile.security)
+        assertEquals("tcp", profile.network)
+        assertEquals("xtls-rprx-vision", profile.flow)
+        assertEquals("www.microsoft.com", profile.sni)
+        assertEquals("m1_23AbCdEfGhIjKlMnOpQrStUvWxYz0123456789Ab", profile.publicKey)
+        assertEquals("6ba85179e30d4fc2", profile.shortId)
+        assertEquals("/docs", profile.spiderX)
+
+        val adapter = XrayEngineAdapter()
+        val configJson = JSONObject(adapter.buildXrayConfig(profile, 10808))
+        val proxyOutbound = configJson.getJSONArray("outbounds").getJSONObject(0)
+
+        val user = proxyOutbound.getJSONObject("settings")
+            .getJSONArray("vnext").getJSONObject(0)
+            .getJSONArray("users").getJSONObject(0)
+        assertEquals("b831381d-6324-4d53-ad4f-8cda48b30811", user.getString("id"))
+        assertEquals("none", user.getString("encryption"))
+        assertEquals("xtls-rprx-vision", user.getString("flow"))
+
+        val realitySettings = proxyOutbound.getJSONObject("streamSettings").getJSONObject("realitySettings")
+        assertEquals("www.microsoft.com", realitySettings.getString("serverName"))
+        assertEquals("chrome", realitySettings.getString("fingerprint"))
+        assertEquals("m1_23AbCdEfGhIjKlMnOpQrStUvWxYz0123456789Ab", realitySettings.getString("publicKey"))
+        assertEquals("6ba85179e30d4fc2", realitySettings.getString("shortId"))
+        assertEquals("/docs", realitySettings.getString("spiderX"))
+    }
+
+    @Test
+    fun testVlessGrpcConfigParsingAndGeneration() {
+        val uri = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@grpc.example.com:443" +
+            "?encryption=none&security=tls&type=grpc&serviceName=my-vless-grpc&mode=multi&authority=auth.grpc.example.com&sni=grpc.example.com#GrpcNode"
+
+        val result = ConfigParser.parse(uri)
+        assertTrue(result is ParseResult.Success)
+        val profile = (result as ParseResult.Success).profile
+
+        assertEquals("grpc", profile.network)
+        assertEquals("my-vless-grpc", profile.path)
+        assertEquals("multi", profile.grpcMode)
+        assertEquals("auth.grpc.example.com", profile.grpcAuthority)
+
+        val adapter = XrayEngineAdapter()
+        val configJson = JSONObject(adapter.buildXrayConfig(profile, 10808))
+        val streamSettings = configJson.getJSONArray("outbounds").getJSONObject(0).getJSONObject("streamSettings")
+        val grpcSettings = streamSettings.getJSONObject("grpcSettings")
+        assertEquals("my-vless-grpc", grpcSettings.getString("serviceName"))
+        assertTrue(grpcSettings.getBoolean("multiMode"))
+        assertEquals("auth.grpc.example.com", grpcSettings.getString("authority"))
+
+        val tlsAlpn = streamSettings.getJSONObject("tlsSettings").getJSONArray("alpn")
+        assertEquals("h2", tlsAlpn.getString(0))
+    }
+
+    @Test
+    fun testXrayDnsRoutingAndHevUdpForwardingConfig() {
+        val adapter = XrayEngineAdapter()
+        val profile = VpnProfile(
+            id = UUID.randomUUID().toString(),
+            name = "DNS Test Node",
+            protocol = ProtocolType.VLESS,
+            server = "cf-tunnel.example.com",
+            port = 443,
+            password = "d342d110-d4a3-4513-bfa6-07a5e0f0ff37",
+            security = "tls",
+            network = "ws",
+            path = "/ws",
+            sni = "cf-tunnel.example.com"
+        )
+
+        val json = JSONObject(
+            adapter.buildXrayConfig(
+                profile = profile,
+                localPort = 10808,
+                resolvedServerIps = listOf("104.21.10.1", "172.67.10.2")
+            )
+        )
+
+        // Verify dns-out outbound exists for port 53 interception
+        val outbounds = json.getJSONArray("outbounds")
+        var hasDnsOut = false
+        for (i in 0 until outbounds.length()) {
+            val ob = outbounds.getJSONObject(i)
+            if (ob.getString("tag") == "dns-out" && ob.getString("protocol") == "dns") {
+                hasDnsOut = true
+            }
+        }
+        assertTrue("Expected dns-out outbound in Xray config", hasDnsOut)
+
+        // Verify pre-resolved server host is injected into dns.hosts and sockopt uses UseIP
+        val dns = json.getJSONObject("dns")
+        assertEquals("dns-in", dns.getString("tag"))
+        val hosts = dns.getJSONObject("hosts")
+        assertTrue(hosts.has("cf-tunnel.example.com"))
+        val proxySockopt = outbounds.getJSONObject(0).getJSONObject("streamSettings").getJSONObject("sockopt")
+        assertEquals("UseIP", proxySockopt.getString("domainStrategy"))
+
+        // Verify first routing rule routes port 53 to dns-out and second routes dns-in to proxy
+        val rules = json.getJSONObject("routing").getJSONArray("rules")
+        assertEquals("53", rules.getJSONObject(0).getString("port"))
+        assertEquals("dns-out", rules.getJSONObject(0).getString("outboundTag"))
+        assertEquals("proxy", rules.getJSONObject(1).getString("outboundTag"))
+
+        // Verify HevTunnelManager uses RFC 1928 'udp' mode for Xray
+        val hevYaml = com.example.vpn.engine.HevTunnelManager.buildConfigYaml("127.0.0.1", 10808, "udp")
+        assertTrue(hevYaml.contains("udp: 'udp'"))
+    }
+
+    @Test
+    fun testInvalidAndUnsupportedVlessParametersFailWithClearDiagnostics() {
+        // 1. REALITY missing public key (pbk)
+        val missingPbkUri = "vless://d342d110-d4a3-4513-bfa6-07a5e0f0ff37@example.com:443?security=reality&sni=www.microsoft.com&type=tcp#BadReality"
+        val res1 = ConfigParser.parse(missingPbkUri)
+        assertTrue(res1 is ParseResult.Failure)
+        assertTrue((res1 as ParseResult.Failure).reason.contains("pbk", ignoreCase = true))
+
+        // 2. Unsupported VLESS encryption (must be none)
+        val badEncUri = "vless://d342d110-d4a3-4513-bfa6-07a5e0f0ff37@example.com:443?encryption=aes-128-gcm&security=tls&type=ws#BadEnc"
+        val res2 = ConfigParser.parse(badEncUri)
+        assertTrue(res2 is ParseResult.Failure)
+        assertTrue((res2 as ParseResult.Failure).reason.contains("encryption", ignoreCase = true))
+
+        // 3. Unsupported VLESS transport type
+        val badNetUri = "vless://d342d110-d4a3-4513-bfa6-07a5e0f0ff37@example.com:443?security=tls&type=wireguard#BadNet"
+        val res3 = ConfigParser.parse(badNetUri)
+        assertTrue(res3 is ParseResult.Failure)
+        assertTrue((res3 as ParseResult.Failure).reason.contains("transport", ignoreCase = true))
+
+        // 4. XrayEngineAdapter.validateProfile rejects deprecated/invalid flow
+        val adapter = XrayEngineAdapter()
+        val badFlowProfile = VpnProfile(
+            id = UUID.randomUUID().toString(),
+            name = "Bad Flow",
+            protocol = ProtocolType.VLESS,
+            server = "example.com",
+            port = 443,
+            password = "d342d110-d4a3-4513-bfa6-07a5e0f0ff37",
+            security = "tls",
+            network = "tcp",
+            flow = "xtls-rprx-direct"
+        )
+        var flowRejected = false
+        try {
+            adapter.validateProfile(badFlowProfile)
+        } catch (e: IllegalArgumentException) {
+            flowRejected = e.message?.contains("flow", ignoreCase = true) == true
+        }
+        assertTrue("Deprecated xtls-rprx-direct flow must be rejected", flowRejected)
+    }
 }
