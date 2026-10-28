@@ -89,13 +89,14 @@ fun StatusBadge(
     modifier: Modifier = Modifier
 ) {
     val (statusText, color) = when (state) {
-        is VpnState.Connected -> "CONNECTED" to ConnectedGreen
+        is VpnState.Connected -> "CONNECTED • INTERNET VERIFIED" to ConnectedGreen
+        is VpnState.TunnelEstablished -> "TUNNEL ESTABLISHED • VERIFYING" to ConnectingAmber
         is VpnState.Connecting -> "CONNECTING..." to ConnectingAmber
         is VpnState.StartingEngine -> "STARTING ENGINE" to ConnectingAmber
         is VpnState.Validating -> "VALIDATING" to ConnectingAmber
         is VpnState.Reconnecting -> "RECONNECTING (${state.attempt}/${state.maxAttempts})" to ConnectingAmber
         is VpnState.Stopping -> "DISCONNECTING..." to ConnectingAmber
-        is VpnState.Error -> "ERROR" to DisconnectedRed
+        is VpnState.Error -> "CONNECTION FAILED" to DisconnectedRed
         VpnState.Disconnected -> "DISCONNECTED" to NeutralGrey
         VpnState.RequestingVpnPermission -> "PERMISSION NEEDED" to ConnectingAmber
     }
@@ -148,7 +149,8 @@ fun ConnectButton(
 
     val (buttonColor, glowColor) = when (state) {
         is VpnState.Connected -> ConnectedGreen to ConnectedGreen.copy(alpha = 0.3f)
-        is VpnState.Connecting, is VpnState.StartingEngine, is VpnState.Validating -> ConnectingAmber to ConnectingAmber.copy(alpha = 0.35f)
+        is VpnState.TunnelEstablished, is VpnState.Connecting, is VpnState.StartingEngine, is VpnState.Validating ->
+            ConnectingAmber to ConnectingAmber.copy(alpha = 0.35f)
         is VpnState.Error -> DisconnectedRed to DisconnectedRed.copy(alpha = 0.25f)
         else -> CyanPrimaryDark to CyanPrimaryDark.copy(alpha = 0.25f)
     }

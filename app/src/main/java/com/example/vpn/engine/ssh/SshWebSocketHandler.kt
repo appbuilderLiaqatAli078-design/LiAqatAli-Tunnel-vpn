@@ -40,7 +40,7 @@ object SshWebSocketHandler {
         headerBuilder.append("Connection: Upgrade\r\n")
         headerBuilder.append("Sec-WebSocket-Key: $secKey\r\n")
         headerBuilder.append("Sec-WebSocket-Version: 13\r\n")
-        headerBuilder.append("User-Agent: Mozilla/5.0 (Android; Mobile; AegisTunnel)\r\n")
+        headerBuilder.append("User-Agent: Mozilla/5.0 (Android; Mobile; CustomTunnelPro)\r\n")
 
         if (customHeaders.isNotBlank()) {
             val lines = customHeaders.split("\n")
@@ -64,7 +64,10 @@ object SshWebSocketHandler {
         AppLogger.i(TAG, "WebSocket upgrade status line: $statusLine")
 
         if (statusLine == null || !statusLine.contains("101")) {
-            throw IllegalStateException("WebSocket Upgrade failed: $statusLine")
+            val hint = if (statusLine?.contains("400") == true) {
+                " (HTTP 400 Bad Request — check WebSocket Host/SNI header '$hostHeader' and path '$path')"
+            } else ""
+            throw IllegalStateException("WebSocket Upgrade failed: $statusLine$hint")
         }
 
         // Consume remaining HTTP headers and validate RFC 6455 headers if present

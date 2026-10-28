@@ -134,7 +134,7 @@ class ProfileRepository(private val context: Context) {
                 security = "tls",
                 network = "ws",
                 path = "/vless-ws",
-                sni = "cf-tunnel.aegis.net",
+                sni = "cf-tunnel.customtunnelpro.org",
                 dnsPrimary = "1.1.1.1",
                 dnsSecondary = "8.8.8.8"
             ),
@@ -155,23 +155,23 @@ class ProfileRepository(private val context: Context) {
                 id = UUID.randomUUID().toString(),
                 name = "SSH Secure WebSocket (WSS)",
                 protocol = ProtocolType.SSH,
-                server = "ssh-wss.aegistunnel.org",
+                server = "ssh-wss.customtunnelpro.org",
                 port = 443,
                 sshMode = com.example.model.SshTunnelMode.SECURE_WEBSOCKET,
-                sshUsername = "aegisuser",
+                sshUsername = "tunneluser",
                 password = "wssPassword456",
-                sshSni = "ssh-wss.aegistunnel.org",
+                sshSni = "ssh-wss.customtunnelpro.org",
                 sshWsPath = "/ssh"
             ),
             VpnProfile(
                 id = UUID.randomUUID().toString(),
                 name = "Trojan Secure Gateway",
                 protocol = ProtocolType.TROJAN,
-                server = "gateway.aegistunnel.org",
+                server = "gateway.customtunnelpro.org",
                 port = 443,
-                password = "aegisTrojanPasswd987",
+                password = "customTrojanPasswd987",
                 security = "tls",
-                sni = "gateway.aegistunnel.org"
+                sni = "gateway.customtunnelpro.org"
             )
         )
     }

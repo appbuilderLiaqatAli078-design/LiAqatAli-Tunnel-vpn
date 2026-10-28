@@ -121,12 +121,18 @@ class SshEngineAdapter : VpnEngineAdapter {
 
             if (!session.isConnected) {
                 AppLogger.e(TAG, "SSH session connection failed")
-                return@withContext false
+                throw IllegalStateException("SSH session failed to establish connection to ${effectiveProfile.server}:${effectiveProfile.port}")
             }
 
             session.serverAliveInterval = 30_000
             AppLogger.i(TAG, "SSH session authenticated (${session.serverVersion})")
             jschSession = session
+
+            vpnService.notifyTunnelEstablished(
+                effectiveProfile.name,
+                "SSH session authenticated, verifying internet forwarding..."
+            )
+            verifySshOutboundForwarding(session, effectiveProfile)
 
             // 4. Configure Local or Remote Port Forwarding if requested
             if (profile.sshMode == SshTunnelMode.LOCAL_PORT_FORWARDING) {
@@ -171,7 +177,7 @@ class SshEngineAdapter : VpnEngineAdapter {
             if (!hevStarted) {
                 AppLogger.e(TAG, "HEV forwarder failed to attach to SSH SOCKS5 port")
                 stop()
-                return@withContext false
+                throw IllegalStateException("Failed to attach TUN-to-SOCKS5 forwarder to SSH engine")
             }
 
             isEngineRunning = true
@@ -183,13 +189,32 @@ class SshEngineAdapter : VpnEngineAdapter {
                 e is java.net.SocketTimeoutException -> "Connection timed out connecting to ${profile.server}:${profile.port}"
                 e.message?.contains("Auth fail", ignoreCase = true) == true -> "SSH Authentication failed: Invalid username or password/key"
                 e.message?.contains("rekeying", ignoreCase = true) == true -> "SSH key exchange timed out or transport desynchronized: ${e.message}"
+                e.message?.contains("400", ignoreCase = true) == true -> e.message ?: "HTTP 400 Bad Request from server"
                 e.message?.contains("rejected", ignoreCase = true) == true -> e.message ?: "Server rejected HTTP tunnel"
                 e.message?.contains("handshake", ignoreCase = true) == true -> e.message ?: "Transport handshake failed"
-                else -> "Error starting SSH engine: ${e.message}"
+                e.message?.contains("banner", ignoreCase = true) == true -> e.message ?: "Invalid SSH server banner"
+                else -> e.message ?: "Error starting SSH engine"
             }
             AppLogger.e(TAG, userFriendlyMsg, e)
             stop()
-            false
+            throw IllegalStateException(userFriendlyMsg, e)
+        }
+    }
+
+    private fun verifySshOutboundForwarding(session: Session, profile: VpnProfile) {
+        val dnsProbeHost = profile.dnsPrimary.ifBlank { "1.1.1.1" }
+        try {
+            val probeChannel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
+            probeChannel.setHost(dnsProbeHost)
+            probeChannel.setPort(53)
+            probeChannel.connect(8000)
+            probeChannel.disconnect()
+            AppLogger.i(TAG, "Verified SSH direct-tcpip outbound forwarding via $dnsProbeHost:53")
+        } catch (e: Exception) {
+            AppLogger.w(
+                TAG,
+                "SSH direct-tcpip probe to $dnsProbeHost:53 returned warning (${e.message}); continuing with active SSH session"
+            )
         }
     }
 

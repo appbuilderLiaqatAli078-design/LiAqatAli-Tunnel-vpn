@@ -145,6 +145,10 @@ class ExampleUnitTest {
         assertFalse(connecting.isConnected)
         assertTrue(connecting.isBusy)
 
+        val tunnelEstablished = VpnState.TunnelEstablished("Test Server", "Verifying internet...")
+        assertFalse(tunnelEstablished.isConnected)
+        assertTrue(tunnelEstablished.isBusy)
+
         val connected = VpnState.Connected("Test Server", System.currentTimeMillis(), "Xray")
         assertTrue(connected.isConnected)
         assertFalse(connected.isBusy)
@@ -733,5 +737,46 @@ class ExampleUnitTest {
             flowRejected = e.message?.contains("flow", ignoreCase = true) == true
         }
         assertTrue("Deprecated xtls-rprx-direct flow must be rejected", flowRejected)
+    }
+
+    @Test
+    fun testHttp400BadRequestDiagnosticOnPayloadAndConnectProxy() {
+        val serverSocket = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        val port = serverSocket.localPort
+
+        val serverThread = Thread {
+            serverSocket.use { srv ->
+                val client = srv.accept()
+                client.use { sock ->
+                    val inp = sock.getInputStream()
+                    val out = sock.getOutputStream()
+                    while (true) {
+                        val line = PayloadInjector.readLine(inp) ?: break
+                        if (line.isEmpty()) break
+                    }
+                    out.write("HTTP/1.1 400 Bad Request\r\nServer: cloudflare\r\n\r\n".toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+            }
+        }
+        serverThread.start()
+
+        var diagnosticMsg: String? = null
+        try {
+            PayloadInjector.injectAndConnect(
+                socket = java.net.Socket(),
+                targetHost = "127.0.0.1",
+                targetPort = port,
+                proxyHost = "",
+                proxyPort = 0,
+                payload = "CONNECT 127.0.0.1:$port HTTP/1.1[crlf][crlf]",
+                timeoutMs = 5000
+            )
+        } catch (e: IllegalStateException) {
+            diagnosticMsg = e.message
+        }
+        assertNotNull(diagnosticMsg)
+        assertTrue(diagnosticMsg!!.contains("400 Bad Request"))
+        serverThread.join(2000)
     }
 }

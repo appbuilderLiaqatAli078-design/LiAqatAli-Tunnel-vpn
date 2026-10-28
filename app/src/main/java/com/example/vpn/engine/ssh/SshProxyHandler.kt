@@ -40,7 +40,7 @@ object SshProxyHandler {
         request.append("CONNECT $targetHost:$targetPort HTTP/1.1\r\n")
         request.append("Host: $targetHost:$targetPort\r\n")
         request.append("Proxy-Connection: Keep-Alive\r\n")
-        request.append("User-Agent: Mozilla/5.0 (Android; Mobile; AegisTunnel)\r\n")
+        request.append("User-Agent: Mozilla/5.0 (Android; Mobile; CustomTunnelPro)\r\n")
         if (authHeader.isNotEmpty()) request.append(authHeader)
 
         if (customHeaders.isNotBlank()) {
@@ -62,7 +62,10 @@ object SshProxyHandler {
         AppLogger.i(TAG, "HTTP Proxy status: $statusLine")
 
         if (statusLine == null || !statusLine.contains("200")) {
-            throw IllegalStateException("HTTP Proxy CONNECT rejected: $statusLine")
+            val hint = if (statusLine?.contains("400") == true) {
+                " ($proxyHost:$proxyPort returned HTTP 400 Bad Request to CONNECT — this server is an HTTP/CDN endpoint that does not allow raw HTTP CONNECT proxying; use SSH Direct with Custom Payload or WebSocket mode instead)"
+            } else ""
+            throw IllegalStateException("HTTP Proxy CONNECT rejected: $statusLine$hint")
         }
 
         // Consume remaining headers

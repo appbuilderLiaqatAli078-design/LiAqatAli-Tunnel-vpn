@@ -1,6 +1,6 @@
 {
-  "name": "AegisTunnel VPN",
-  "description": "Professional multi-engine Android VPN supporting Xray/V2Ray, SSH dynamic tunneling, and HEV SOCKS5 TUN routing with 32-bit and 64-bit ARM architecture.",
+  "name": "Custom Tunnel Pro",
+  "description": "Custom Tunnel Pro by Liaqat Ali (@LiaqatAliPro) — Multi-engine Android VPN supporting Xray-Core (VLESS, VMess, Trojan, Shadowsocks), 14 SSH tunnel modes, custom HTTP/WebSocket payload injection, and HEV SOCKS5 TUN routing for arm64-v8a and armeabi-v7a.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

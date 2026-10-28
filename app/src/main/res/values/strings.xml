@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">AegisTunnel</string>
+    <string name="app_name">Custom Tunnel Pro</string>
+    <string name="developer_name">Liaqat Ali</string>
+    <string name="telegram_handle">@LiaqatAliPro</string>
 </resources>

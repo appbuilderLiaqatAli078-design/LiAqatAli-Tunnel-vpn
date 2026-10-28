@@ -36,6 +36,10 @@ sealed class VpnState {
     object RequestingVpnPermission : VpnState()
     data class StartingEngine(val engineName: String) : VpnState()
     data class Connecting(val profileName: String, val attempt: Int = 1) : VpnState()
+    data class TunnelEstablished(
+        val profileName: String,
+        val detail: String = "Tunnel established, verifying internet..."
+    ) : VpnState()
     data class Connected(
         val profileName: String,
         val connectedSince: Long,
@@ -54,7 +58,7 @@ sealed class VpnState {
     ) : VpnState()
 
     val isConnected: Boolean get() = this is Connected
-    val isBusy: Boolean get() = this is Validating || this is StartingEngine || this is Connecting || this is Reconnecting || this is Stopping
+    val isBusy: Boolean get() = this is Validating || this is StartingEngine || this is Connecting || this is TunnelEstablished || this is Reconnecting || this is Stopping
 }
 
 enum class SshTunnelMode(

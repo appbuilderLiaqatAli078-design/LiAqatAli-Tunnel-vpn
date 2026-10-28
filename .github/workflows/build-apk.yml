@@ -150,11 +150,12 @@ jobs:
 
           # Write release notes safely using printf (avoids heredoc EOF indentation syntax error)
           printf "%s\n" \
-            "### AegisTunnel VPN Debug Build" \
+            "### Custom Tunnel Pro Debug Build" \
             "This is an automatically generated debug APK built by GitHub Actions." \
+            "- Application ID: **com.customtunnelpro.vpn**" \
+            "- Developer: **Liaqat Ali** (Telegram: **@LiaqatAliPro**)" \
             "- Verified dual architecture: **arm64-v8a** (64-bit) & **armeabi-v7a** (32-bit)" \
-            "- Note: This APK is intended for testing and is not a Play Store production release." \
-            "- Note: This APK is signed with a temporary debug keystore." > release_notes.md
+            "- Note: This APK is intended for testing and is signed with the project debug keystore." > release_notes.md
 
           gh release create "$TAG" "$ASSET_PATH#$ASSET_NAME" \
             --title "$TITLE" \

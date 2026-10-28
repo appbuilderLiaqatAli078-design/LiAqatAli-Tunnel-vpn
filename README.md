@@ -1,12 +1,16 @@
-# AegisTunnel VPN
+# Custom Tunnel Pro
 
-Professional Android VPN and tunneling application inspired by the capabilities of HTTP Custom and DarkTunnel, featuring original cyber-security branding, high-fidelity Material 3 Jetpack Compose UI, and verified support for both 64-bit (`arm64-v8a`) and 32-bit (`armeabi-v7a`) ARM Android architectures.
+**Developer:** Liaqat Ali  
+**Telegram:** `@LiaqatAliPro`  
+**Application ID:** `com.customtunnelpro.vpn`
+
+Professional Android VPN and tunneling application supporting Xray-Core (VLESS, VMess, Trojan, Shadowsocks, SOCKS5), 14 SSH tunnel modes (Direct, HTTP Proxy, HTTP CONNECT, Custom Payload, SSL/TLS, WebSocket WS/WSS, TLS+WS, SOCKS4/5, Proxy Chain, Local/Remote/Dynamic Port Forwarding), and HEV SOCKS5 TUN routing for both 64-bit (`arm64-v8a`) and 32-bit (`armeabi-v7a`) ARM Android architectures.
 
 ---
 
 ## 1. Architecture Overview
 
-AegisTunnel implements a modular multi-engine VPN architecture running over the standard Android `VpnService` with complete lifecycle state machine and upstream socket protection (`VpnService.protect()`).
+Custom Tunnel Pro implements a modular multi-engine VPN architecture running over the standard Android `VpnService` with complete lifecycle state machine and upstream socket protection (`VpnService.protect()`).
 
 ```
  +---------------------------------------------------------------+

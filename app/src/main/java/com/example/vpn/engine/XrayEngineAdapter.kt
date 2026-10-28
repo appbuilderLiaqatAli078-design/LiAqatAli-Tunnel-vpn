@@ -92,6 +92,10 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 throw IllegalStateException("Xray core loop failed to start")
             }
 
+            vpnService.notifyTunnelEstablished(
+                profile.name,
+                "Xray transport established, verifying internet connectivity..."
+            )
             AppLogger.i(TAG, "Verifying real outbound connectivity through ${profile.protocol.displayName} server...")
             verifyTunnelConnectivity(controller, profile)
 

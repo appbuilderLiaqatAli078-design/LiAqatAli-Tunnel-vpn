@@ -41,7 +41,7 @@ object PayloadInjector {
             .replace("[method]", method, ignoreCase = true)
             .replace("[protocol]", "HTTP/1.1", ignoreCase = true)
             .replace("[auth]", authReplacement, ignoreCase = true)
-            .replace("[ua]", "Mozilla/5.0 (Android; Mobile; AegisTunnel)", ignoreCase = true)
+            .replace("[ua]", "Mozilla/5.0 (Android; Mobile; CustomTunnelPro)", ignoreCase = true)
             .replace("[reverse_proxy]", "X-Forwarded-For: 127.0.0.1\r\nX-Real-IP: 127.0.0.1", ignoreCase = true)
             .replace("[raw]", "", ignoreCase = true)
 
@@ -114,7 +114,14 @@ object PayloadInjector {
 
             val statusCode = extractStatusCode(statusLine)
             if (statusCode != 101 && statusCode != 200) {
-                throw IllegalStateException("Server rejected HTTP tunnel (status $statusCode): $statusLine")
+                val hint = when (statusCode) {
+                    400 -> " — HTTP 400 Bad Request: endpoint rejected the request syntax or Host header (if connecting through a CDN/Cloudflare host on port 80, use GET / with a valid Host header and Upgrade: websocket rather than raw CONNECT)"
+                    403 -> " — HTTP 403 Forbidden: CDN or firewall blocked this Host/path"
+                    407 -> " — HTTP 407 Proxy Authentication Required: check proxy username/password"
+                    502, 503, 521, 522, 524 -> " — Upstream origin SSH/WebSocket backend is unreachable from CDN edge"
+                    else -> ""
+                }
+                throw IllegalStateException("Server rejected HTTP tunnel (status $statusCode): $statusLine$hint")
             }
 
             // Read remaining headers until blank line (\r\n\r\n)

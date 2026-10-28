@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "AegisTunnel"
+rootProject.name = "Custom Tunnel Pro"
 
 include(":app")

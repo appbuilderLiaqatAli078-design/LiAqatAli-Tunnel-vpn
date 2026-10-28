@@ -193,7 +193,7 @@ fun SettingsScreen(
                 }
 
                 Text(
-                    text = "AegisTunnel embeds native dual-architecture .so binaries for both 64-bit and 32-bit ARM chipsets:",
+                    text = "Custom Tunnel Pro embeds native dual-architecture .so binaries for both 64-bit and 32-bit ARM chipsets:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -201,6 +201,27 @@ fun SettingsScreen(
                 AbiVerificationRow("arm64-v8a (64-bit ARM)", "Verified in APK (libgojni.so + libhev-socks5-tunnel.so)")
                 AbiVerificationRow("armeabi-v7a (32-bit ARM)", "Verified in APK (libgojni.so + libhev-socks5-tunnel.so)")
                 AbiVerificationRow("Current Active Device ABI", activeAbi)
+            }
+        }
+
+        // About & Developer Credits Card
+        GlassCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.Shield, contentDescription = null, tint = CyanPrimaryDark)
+                    Text(
+                        text = "About Custom Tunnel Pro",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                AbiVerificationRow("Application Name", "Custom Tunnel Pro v2.0.0")
+                AbiVerificationRow("Application ID", "com.customtunnelpro.vpn")
+                AbiVerificationRow("Developer", "Liaqat Ali")
+                AbiVerificationRow("Telegram Support", "@LiaqatAliPro")
             }
         }
 
@@ -229,7 +250,7 @@ fun SettingsScreen(
         }
 
         Text(
-            text = "AegisTunnel VPN v2.0 • Build verified for arm64-v8a & armeabi-v7a",
+            text = "Custom Tunnel Pro v2.0.0 • Developer: Liaqat Ali (@LiaqatAliPro) • arm64-v8a & armeabi-v7a",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             modifier = Modifier.padding(top = 8.dp)
@@ -267,7 +288,7 @@ fun SettingsScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "• Zero Traffic Logging: AegisTunnel does not monitor, inspect, log, or store your internet activity or network traffic.",
+                        "• Zero Traffic Logging: Custom Tunnel Pro does not monitor, inspect, log, or store your internet activity or network traffic.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(

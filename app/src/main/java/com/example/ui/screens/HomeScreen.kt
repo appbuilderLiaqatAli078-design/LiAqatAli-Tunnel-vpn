@@ -117,12 +117,12 @@ fun HomeScreen(
         ) {
             Column {
                 Text(
-                    text = "AegisTunnel",
+                    text = "Custom Tunnel Pro",
                     style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.ExtraBold),
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
-                    text = if (settings.proMode) "Pro Tunnel Mode" else "Simple Mode",
+                    text = if (settings.proMode) "Pro Tunnel Mode • Liaqat Ali (@LiaqatAliPro)" else "Simple Mode • @LiaqatAliPro",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -154,6 +154,17 @@ fun HomeScreen(
 
         // Active State Badge
         StatusBadge(state = vpnState)
+
+        // Intermediate TunnelEstablished verification status
+        AnimatedVisibility(visible = vpnState is VpnState.TunnelEstablished) {
+            val detail = (vpnState as? VpnState.TunnelEstablished)?.detail ?: "Tunnel established, verifying internet..."
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
 
         // Session Timer (if connected)
         AnimatedVisibility(visible = vpnState is VpnState.Connected) {

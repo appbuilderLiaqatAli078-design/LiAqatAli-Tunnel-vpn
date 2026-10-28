@@ -171,10 +171,18 @@ class AegisVpnService : VpnService() {
         }
     }
 
+    fun notifyTunnelEstablished(
+        profileName: String,
+        detail: String = "Tunnel established, verifying internet..."
+    ) {
+        _vpnState.value = VpnState.TunnelEstablished(profileName, detail)
+        updateNotification(detail, false)
+    }
+
     private fun establishTun(profile: VpnProfile): ParcelFileDescriptor? {
         AppLogger.i(TAG, "Configuring Android VpnService.Builder TUN device")
         val builder = Builder()
-            .setSession("AegisTunnel-${profile.name}")
+            .setSession("CustomTunnelPro-${profile.name}")
             .setMtu(1500)
             .addAddress("198.18.0.1", 24)
             .addRoute("0.0.0.0", 0)
@@ -307,7 +315,7 @@ class AegisVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "AegisTunnel VPN Status",
+                "Custom Tunnel Pro Status",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Shows active VPN connection status and traffic"
@@ -340,7 +348,7 @@ class AegisVpnService : VpnService() {
         )
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("AegisTunnel VPN")
+            .setContentTitle("Custom Tunnel Pro")
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(isConnected)
