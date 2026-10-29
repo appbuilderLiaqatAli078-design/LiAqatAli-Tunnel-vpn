@@ -190,33 +190,12 @@ class XrayEngineAdapter : VpnEngineAdapter {
     fun verifyTunnelConnectivity(controller: CoreController, profile: VpnProfile): ConnectivityCheckResult {
         val probeUrls = listOf(
             "http://cp.cloudflare.com/generate_204",
-            "http://connectivitycheck.gstatic.com/generate_204",
-            "https://cp.cloudflare.com/generate_204"
+            "http://connectivitycheck.gstatic.com/generate_204"
         )
 
         var lastError: String? = null
         var lastCategory = ProbeFailureCategory.TIMEOUT
 
-        // 1. Probe through the actual local SOCKS5 inbound (exercises HEV -> socks-in -> routing -> proxy)
-        for (url in probeUrls.take(2)) {
-            val socksOutcome = probeViaLocalSocks(url, timeoutMs = 4500)
-            if (socksOutcome.rttMs > 0) {
-                val msg = "Verified via SOCKS5 (${socksOutcome.rttMs}ms)"
-                AppLogger.i(TAG, "Outbound tunnel verified via SOCKS5 $url (RTT: ${socksOutcome.rttMs}ms)")
-                return ConnectivityCheckResult(
-                    verified = true,
-                    rttMs = socksOutcome.rttMs,
-                    endpoint = url,
-                    failureCategory = ProbeFailureCategory.NONE,
-                    diagnosticMessage = msg
-                )
-            } else if (socksOutcome.error != null) {
-                lastError = socksOutcome.error
-                lastCategory = classifyProbeError(socksOutcome.error)
-            }
-        }
-
-        // 2. Independent check via Xray CoreController.measureDelay
         for (url in probeUrls) {
             try {
                 val delayMs = controller.measureDelay(url)
@@ -247,34 +226,6 @@ class XrayEngineAdapter : VpnEngineAdapter {
             failureCategory = lastCategory,
             diagnosticMessage = diagnostic
         )
-    }
-
-    private data class SocksProbeOutcome(val rttMs: Long, val error: String? = null)
-
-    private fun probeViaLocalSocks(urlStr: String, timeoutMs: Int): SocksProbeOutcome {
-        return try {
-            val startNs = System.nanoTime()
-            val proxy = java.net.Proxy(
-                java.net.Proxy.Type.SOCKS,
-                java.net.InetSocketAddress("127.0.0.1", localSocksPort)
-            )
-            val conn = (java.net.URL(urlStr).openConnection(proxy) as java.net.HttpURLConnection).apply {
-                connectTimeout = timeoutMs
-                readTimeout = timeoutMs
-                instanceFollowRedirects = false
-                requestMethod = "GET"
-                setRequestProperty("Connection", "close")
-            }
-            val code = conn.responseCode
-            conn.disconnect()
-            if (code in 200..399) {
-                SocksProbeOutcome(((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L))
-            } else {
-                SocksProbeOutcome(-1L, "Probe HTTP status $code from $urlStr")
-            }
-        } catch (e: Throwable) {
-            SocksProbeOutcome(-1L, AppLogger.redact(e.message ?: e.javaClass.simpleName))
-        }
     }
 
     fun classifyProbeError(rawError: String?): ProbeFailureCategory {
@@ -468,7 +419,21 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
         root.put("log", log)
 
-        // Inbounds: local SOCKS5 proxy with UDP & sniffing
+        // High-throughput level 8 buffer policy (512 KB per connection pipe buffer)
+        val policy = JSONObject().apply {
+            put("levels", JSONObject().apply {
+                put("8", JSONObject().apply {
+                    put("handshake", 4)
+                    put("connIdle", 300)
+                    put("uplinkOnly", 1)
+                    put("downlinkOnly", 1)
+                    put("bufferSize", 512)
+                })
+            })
+        }
+        root.put("policy", policy)
+
+        // Inbounds: local SOCKS5 proxy with UDP & routeOnly sniffing (avoids redundant remote DNS re-lookup when IP is already resolved)
         val inbounds = JSONArray()
         val socksInbound = JSONObject().apply {
             put("tag", "socks-in")
@@ -483,7 +448,7 @@ class XrayEngineAdapter : VpnEngineAdapter {
             put("sniffing", JSONObject().apply {
                 put("enabled", true)
                 put("destOverride", JSONArray().put("http").put("tls").put("quic"))
-                put("routeOnly", false)
+                put("routeOnly", true)
             })
         }
         inbounds.put(socksInbound)
@@ -744,6 +709,9 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 put("sockopt", JSONObject().apply {
                     // Use pre-resolved IPs from dns.hosts when available so Go on Android does not rely on /etc/resolv.conf
                     put("domainStrategy", if (resolvedServerIps.isNotEmpty()) "UseIP" else "AsIs")
+                    put("tcpFastOpen", true)
+                    put("tcpNoDelay", true)
+                    put("tcpKeepAliveInterval", 30)
                 })
             }
             put("streamSettings", streamSettings)
@@ -760,12 +728,12 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
         outbounds.put(directOutbound)
 
-        // DNS outbound: hijacks port-53 queries from TUN so Xray resolves DNS over TCP through the proxy outbound
+        // DNS outbound: intercepts port-53 queries from TUN and uses Xray's internal caching DNS module
         val dnsOutbound = JSONObject().apply {
             put("tag", "dns-out")
             put("protocol", "dns")
             put("settings", JSONObject().apply {
-                put("network", "tcp")
+                put("nonIPQuery", "skip")
             })
         }
         outbounds.put(dnsOutbound)
@@ -779,9 +747,10 @@ class XrayEngineAdapter : VpnEngineAdapter {
 
         root.put("outbounds", outbounds)
 
-        // DNS configuration with pre-resolved server host to prevent DNS bootstrap loop
+        // DNS configuration with pre-resolved server host and in-memory cache enabled
         val dns = JSONObject().apply {
             put("tag", "dns-in")
+            put("disableCache", false)
             val hosts = JSONObject().apply {
                 put("dns.google", "8.8.8.8")
                 put("cloudflare-dns.com", "1.1.1.1")
@@ -831,6 +800,16 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 put("inboundTag", JSONArray().put("dns-in"))
                 put("outboundTag", "proxy")
             })
+
+            // Reject QUIC (UDP/443) over TCP/WebSocket tunnels so browsers/apps immediately use fast HTTP/2 over TCP
+            // instead of suffering severe QUIC-over-WebSocket-over-TCP double-congestion throughput collapse
+            if (normalizedNetwork != "kcp") {
+                rules.put(JSONObject().apply {
+                    put("type", "field")
+                    put("protocol", JSONArray().put("quic"))
+                    put("outboundTag", "block")
+                })
+            }
 
             rules.put(JSONObject().apply {
                 put("type", "field")

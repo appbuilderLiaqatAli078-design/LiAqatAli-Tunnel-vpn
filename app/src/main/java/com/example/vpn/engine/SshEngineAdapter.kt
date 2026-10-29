@@ -170,12 +170,6 @@ class SshEngineAdapter : VpnEngineAdapter {
             AppLogger.i(TAG, "SSH session authenticated (${session.serverVersion})")
             jschSession = session
 
-            vpnService.notifyTunnelEstablished(
-                effectiveProfile.name,
-                "SSH session authenticated, verifying internet forwarding..."
-            )
-            lastConnectivityResult = verifySshOutboundForwarding(session, effectiveProfile)
-
             // 4. Configure Local or Remote Port Forwarding if requested
             if (profile.sshMode == SshTunnelMode.LOCAL_PORT_FORWARDING) {
                 try {
@@ -203,7 +197,7 @@ class SshEngineAdapter : VpnEngineAdapter {
 
             // 5. Start high-performance local SOCKS5 server on 127.0.0.1:$localSocksPort
             AppLogger.i(TAG, "Starting local SOCKS5 router on 127.0.0.1:$localSocksPort")
-            val sSocket = ServerSocket(localSocksPort, 50, InetAddress.getByName("127.0.0.1"))
+            val sSocket = ServerSocket(localSocksPort, 128, InetAddress.getByName("127.0.0.1"))
             serverSocket = sSocket
 
             startSocksServer(sSocket, session)
@@ -223,6 +217,13 @@ class SshEngineAdapter : VpnEngineAdapter {
             }
 
             isEngineRunning = true
+
+            vpnService.notifyTunnelEstablished(
+                effectiveProfile.name,
+                "SSH session authenticated, verifying internet forwarding..."
+            )
+            lastConnectivityResult = verifySshOutboundForwarding(session, effectiveProfile)
+
             AppLogger.i(TAG, "SSH Tunnel Engine and HEV forwarder running [${profile.sshMode.displayName}]")
             true
         } catch (e: Throwable) {
@@ -284,7 +285,7 @@ class SshEngineAdapter : VpnEngineAdapter {
             val probeChannel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
             probeChannel.setHost(dnsProbeHost)
             probeChannel.setPort(53)
-            probeChannel.connect(8000)
+            probeChannel.connect(3500)
             val rtt = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
             probeChannel.disconnect()
             AppLogger.i(TAG, "Verified SSH direct-tcpip outbound forwarding via $dnsProbeHost:53 (${rtt} ms)")
@@ -327,8 +328,16 @@ class SshEngineAdapter : VpnEngineAdapter {
 
     private fun handleSocksClient(clientSocket: Socket, session: Session) {
         try {
-            val input = DataInputStream(clientSocket.getInputStream())
-            val output = DataOutputStream(clientSocket.getOutputStream())
+            try {
+                clientSocket.tcpNoDelay = true
+                clientSocket.receiveBufferSize = 131072
+                clientSocket.sendBufferSize = 131072
+            } catch (_: Exception) {}
+
+            val bufferedIn = java.io.BufferedInputStream(clientSocket.getInputStream(), 65536)
+            val bufferedOut = java.io.BufferedOutputStream(clientSocket.getOutputStream(), 65536)
+            val input = DataInputStream(bufferedIn)
+            val output = DataOutputStream(bufferedOut)
 
             // SOCKS5 greeting
             val ver = input.readByte().toInt()
@@ -336,7 +345,7 @@ class SshEngineAdapter : VpnEngineAdapter {
                 clientSocket.close()
                 return
             }
-            val nmethods = input.readByte().toInt()
+            val nmethods = input.readByte().toInt() and 0xFF
             val methods = ByteArray(nmethods)
             input.readFully(methods)
 
@@ -382,8 +391,10 @@ class SshEngineAdapter : VpnEngineAdapter {
             }
             val targetPort = input.readUnsignedShort()
 
-            // Prune already closed channels to prevent unbounded memory growth during long sessions
-            activeChannels.removeAll { it.isClosed || !it.isConnected }
+            // Batch-prune closed channels only when list exceeds threshold to avoid O(N) array copy per connection
+            if (activeChannels.size > 48) {
+                activeChannels.removeAll { it.isClosed || !it.isConnected }
+            }
 
             // Open SSH Direct-TCPIP Channel
             val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
@@ -395,8 +406,8 @@ class SshEngineAdapter : VpnEngineAdapter {
             output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             output.flush()
 
-            channel.setInputStream(clientSocket.getInputStream())
-            channel.setOutputStream(clientSocket.getOutputStream())
+            channel.setInputStream(bufferedIn)
+            channel.setOutputStream(bufferedOut)
             channel.connect(8000)
 
             activeChannels.add(channel)

@@ -494,48 +494,49 @@ class ExampleUnitTest {
         val parsed = com.example.parser.SshTargetParser.parse(target)!!
 
         val rawSocket = java.net.Socket()
-        try { rawSocket.bind(null) } catch (_: Exception) {}
-        val upgraded = PayloadInjector.injectAndConnect(
-            socket = rawSocket,
-            targetHost = parsed.host,
-            targetPort = parsed.port,
-            proxyHost = "",
-            proxyPort = 0,
-            payload = payload,
-            timeoutMs = 30000
-        )
-
-        val jsch = com.jcraft.jsch.JSch()
-        val session = jsch.getSession(parsed.username, parsed.host, parsed.port)
-        session.setPassword(parsed.password)
-        val config = java.util.Properties()
-        config["StrictHostKeyChecking"] = "no"
-        config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
-        session.setConfig(config)
-        // Regression test: verify session timeout and serverAliveInterval in milliseconds
-        // (matching SshEngineAdapter configuration so KEX does not fail with "timeout in waiting for rekeying process")
-        session.timeout = 30_000
-        session.serverAliveCountMax = 3
-
-        session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
-            override fun createSocket(host: String, port: Int): java.net.Socket = upgraded
-            override fun getInputStream(socket: java.net.Socket): java.io.InputStream = socket.getInputStream()
-            override fun getOutputStream(socket: java.net.Socket): java.io.OutputStream = socket.getOutputStream()
-        })
-
+        var upgraded: java.net.Socket? = null
         try {
+            try { rawSocket.bind(null) } catch (_: Exception) {}
+            upgraded = PayloadInjector.injectAndConnect(
+                socket = rawSocket,
+                targetHost = parsed.host,
+                targetPort = parsed.port,
+                proxyHost = "",
+                proxyPort = 0,
+                payload = payload,
+                timeoutMs = 15000
+            )
+
+            val upSock = upgraded!!
+            val jsch = com.jcraft.jsch.JSch()
+            val session = jsch.getSession(parsed.username, parsed.host, parsed.port)
+            session.setPassword(parsed.password)
+            val config = java.util.Properties()
+            config["StrictHostKeyChecking"] = "no"
+            config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
+            session.setConfig(config)
+            session.timeout = 30_000
+            session.serverAliveCountMax = 3
+
+            session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
+                override fun createSocket(host: String, port: Int): java.net.Socket = upSock
+                override fun getInputStream(socket: java.net.Socket): java.io.InputStream = socket.getInputStream()
+                override fun getOutputStream(socket: java.net.Socket): java.io.OutputStream = socket.getOutputStream()
+            })
+
             session.connect(15_000)
             session.serverAliveInterval = 30_000
             assertTrue(session.isConnected)
             assertTrue(session.serverVersion.startsWith("SSH-2.0-"))
             session.disconnect()
         } catch (e: Exception) {
-            // If the external demo server is offline or its public test account password expired,
-            // verify that the transport handshake reached SSH-2.0 banner / auth stage rather than failing on KEX timeout.
+            // If the external demo server is offline (e.g. Cloudflare 522) or its public test account password expired,
+            // verify that it did not fail with a JSch rekeying timeout bug.
             val msg = e.message ?: ""
             assertFalse("Must not fail with rekeying timeout: $msg", msg.contains("rekeying", ignoreCase = true))
         } finally {
-            try { upgraded.close() } catch (_: Exception) {}
+            try { upgraded?.close() } catch (_: Exception) {}
+            try { rawSocket.close() } catch (_: Exception) {}
         }
     }
 
@@ -680,26 +681,37 @@ class ExampleUnitTest {
         }
         assertTrue("Expected dns-out outbound in Xray config", hasDnsOut)
 
-        // Verify pre-resolved server host is injected into dns.hosts, proxy sockopt uses UseIP (to avoid Go /etc/resolv.conf failure on Android), and routing uses AsIs
+        // Verify 512KB level-8 buffer policy and routeOnly sniffing (prevents redundant remote DNS lookup)
+        val policyLevel8 = json.getJSONObject("policy").getJSONObject("levels").getJSONObject("8")
+        assertEquals(512, policyLevel8.getInt("bufferSize"))
+        val socksSniffing = json.getJSONArray("inbounds").getJSONObject(0).getJSONObject("sniffing")
+        assertTrue(socksSniffing.getBoolean("routeOnly"))
+
+        // Verify pre-resolved server host is injected into dns.hosts, proxy sockopt uses UseIP + tcpNoDelay + tcpFastOpen, and routing uses AsIs
         val dns = json.getJSONObject("dns")
         assertEquals("dns-in", dns.getString("tag"))
+        assertFalse(dns.getBoolean("disableCache"))
         val hosts = dns.getJSONObject("hosts")
         assertTrue(hosts.has("cf-tunnel.example.com"))
         val dnsServers = dns.getJSONArray("servers")
         assertEquals("tcp://1.1.1.1:53", dnsServers.getString(0))
         val proxySockopt = outbounds.getJSONObject(0).getJSONObject("streamSettings").getJSONObject("sockopt")
         assertEquals("UseIP", proxySockopt.getString("domainStrategy"))
+        assertTrue(proxySockopt.getBoolean("tcpNoDelay"))
+        assertTrue(proxySockopt.getBoolean("tcpFastOpen"))
         assertEquals("AsIs", json.getJSONObject("routing").getString("domainStrategy"))
 
-        // Verify first routing rule routes port 53 to dns-out and second routes dns-in to proxy
+        // Verify first routing rule routes port 53 to dns-out, second routes dns-in to proxy, and third blocks QUIC over WS/TCP
         val rules = json.getJSONObject("routing").getJSONArray("rules")
         assertEquals("53", rules.getJSONObject(0).getString("port"))
         assertEquals("dns-out", rules.getJSONObject(0).getString("outboundTag"))
         assertEquals("proxy", rules.getJSONObject(1).getString("outboundTag"))
+        assertEquals("block", rules.getJSONObject(2).getString("outboundTag"))
 
-        // Verify HevTunnelManager uses RFC 1928 'udp' mode for Xray
+        // Verify HevTunnelManager uses RFC 1928 'udp' mode and 64KB tcp-buffer-size for Xray
         val hevYaml = com.example.vpn.engine.HevTunnelManager.buildConfigYaml("127.0.0.1", 10808, "udp")
         assertTrue(hevYaml.contains("udp: 'udp'"))
+        assertTrue(hevYaml.contains("tcp-buffer-size: 65536"))
     }
 
     @Test
@@ -995,5 +1007,64 @@ class ExampleUnitTest {
         assertNotNull(responses)
         assertEquals(1, responses!!.size)
         assertEquals("SecretPamPass!", responses[0])
+    }
+
+    @Test
+    fun testTunnelThroughputAndLatencyBenchmark() {
+        val chunkSize = 8192
+        val payload = ByteArray(chunkSize) { (it and 0xFF).toByte() }
+
+        fun runWsTransfer(totalBytes: Int): Double {
+            val iterations = totalBytes / chunkSize
+            val serverSocket = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+            val port = serverSocket.localPort
+            val serverThread = Thread {
+                serverSocket.use { srv ->
+                    val client = srv.accept()
+                    client.use { sock ->
+                        sock.receiveBufferSize = 262144
+                        sock.sendBufferSize = 262144
+                        val wsServer = com.example.vpn.engine.ssh.WebSocketFramedSocket(sock, sock.getInputStream())
+                        val inp = wsServer.getInputStream()
+                        val buf = ByteArray(16384)
+                        var readTotal = 0
+                        while (readTotal < totalBytes) {
+                            val r = inp.read(buf)
+                            if (r <= 0) break
+                            readTotal += r
+                        }
+                    }
+                }
+            }
+            serverThread.start()
+
+            val clientRaw = java.net.Socket()
+            clientRaw.receiveBufferSize = 262144
+            clientRaw.sendBufferSize = 262144
+            clientRaw.connect(java.net.InetSocketAddress("127.0.0.1", port), 5000)
+            val wsClient = com.example.vpn.engine.ssh.WebSocketFramedSocket(clientRaw, clientRaw.getInputStream())
+            val out = wsClient.getOutputStream()
+
+            val startNs = System.nanoTime()
+            for (i in 0 until iterations) {
+                out.write(payload, 0, chunkSize)
+            }
+            out.flush()
+            wsClient.close()
+            serverThread.join(10000)
+            return ((System.nanoTime() - startNs) / 1_000_000.0).coerceAtLeast(1.0)
+        }
+
+        // Warmup (4 MB) so HotSpot C2 compiles the masking/unmasking loops
+        runWsTransfer(4 * 1024 * 1024)
+
+        // Timed 16 MB WebSocketFramedSocket transfer
+        val totalBytes = 16 * 1024 * 1024
+        val elapsedMs = runWsTransfer(totalBytes)
+        val throughputMbps = (totalBytes * 8.0 / 1_000_000.0) / (elapsedMs / 1000.0)
+        val throughputMBps = (totalBytes / (1024.0 * 1024.0)) / (elapsedMs / 1000.0)
+
+        println("BENCHMARK_RESULT: WebSocketFramedSocket 16MB transfer time=${String.format(java.util.Locale.US, "%.2f", elapsedMs)}ms, speed=${String.format(java.util.Locale.US, "%.2f", throughputMBps)} MB/s (${String.format(java.util.Locale.US, "%.2f", throughputMbps)} Mbps)")
+        assertTrue(throughputMBps > 10.0)
     }
 }

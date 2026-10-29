@@ -22,6 +22,10 @@ class SshSocketFactory(
     override fun createSocket(host: String, port: Int): Socket {
         val rawSocket = Socket()
         try {
+            rawSocket.tcpNoDelay = true
+            rawSocket.keepAlive = true
+            rawSocket.receiveBufferSize = 262144
+            rawSocket.sendBufferSize = 262144
             // Pre-bind to an ephemeral local port so Android's PlainSocketImpl allocates
             // the native OS FileDescriptor before VpnService.protect(), while preserving
             // standard full-duplex SocketInputStream/SocketOutputStream without NIO blockingLock contention.

@@ -31,6 +31,7 @@ object HevTunnelManager {
               udp: '$normalizedUdp'
             misc:
               task-stack-size: 81920
+              tcp-buffer-size: 65536
               connect-timeout: 10000
               tcp-read-write-timeout: 300000
               udp-read-write-timeout: 60000
