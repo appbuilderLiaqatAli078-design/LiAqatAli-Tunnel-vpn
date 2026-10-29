@@ -233,9 +233,9 @@ fun ProfileEditScreen(
             OutlinedTextField(
                 value = server,
                 onValueChange = { input ->
-                    if (protocol == ProtocolType.SSH && (input.contains("@") || input.startsWith("ssh://") || input.contains(":"))) {
+                    if (protocol == ProtocolType.SSH && (input.contains("@") || input.startsWith("ssh://", ignoreCase = true))) {
                         val parsed = SshTargetParser.parse(input)
-                        if (parsed != null) {
+                        if (parsed != null && parsed.host.isNotBlank()) {
                             server = parsed.host
                             portText = parsed.port.toString()
                             if (parsed.username.isNotBlank()) sshUser = parsed.username
@@ -974,13 +974,13 @@ fun ProfileEditScreen(
 
             Button(
                 onClick = {
-                    val targetInfo = if (protocol == ProtocolType.SSH && (server.contains("@") || server.startsWith("ssh://") || server.contains(":"))) {
+                    val targetInfo = if (protocol == ProtocolType.SSH && (server.contains("@") || server.startsWith("ssh://", ignoreCase = true) || server.contains(":"))) {
                         SshTargetParser.parse(server, portText.toIntOrNull() ?: 22)
                     } else null
 
-                    val effectiveServer = targetInfo?.host ?: server
+                    val effectiveServer = (targetInfo?.host ?: server).trim()
                     val effectivePort = targetInfo?.port ?: portText.toIntOrNull()
-                    val effectiveUser = if (sshUser.isNotBlank() && sshUser != "root") sshUser else (targetInfo?.username?.ifBlank { "root" } ?: sshUser)
+                    val effectiveUser = (if (sshUser.isNotBlank() && sshUser != "root") sshUser else (targetInfo?.username?.ifBlank { "root" } ?: sshUser)).trim()
                     val effectivePass = if (password.isNotBlank()) password else (targetInfo?.password ?: "")
 
                     if (effectiveServer.isBlank()) {

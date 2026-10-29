@@ -35,12 +35,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 
 class CustomTunnelVpnService : VpnService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
     private var statsJob: Job? = null
     private var connectionJob: Job? = null
+    private val lifecycleMutex = Mutex()
+    private val connectionGeneration = AtomicLong(0L)
 
     private var tunInterface: ParcelFileDescriptor? = null
     private var currentEngine: VpnEngineAdapter? = null
@@ -95,104 +101,139 @@ class CustomTunnelVpnService : VpnService() {
             return
         }
 
+        // Guard against duplicate connect requests for the exact same profile while already connecting
+        val currentState = _vpnState.value
+        if (currentState.isBusy && activeProfileData?.id == profile.id && connectionJob?.isActive == true) {
+            AppLogger.w(TAG, "Connection attempt already in progress for ${profile.name}; ignoring duplicate request")
+            return
+        }
+
+        val myGen = connectionGeneration.incrementAndGet()
         connectionJob?.cancel()
         connectionJob = serviceScope.launch {
-            try {
-                // Enforce .ctp security locks before initiating connection
-                if (profile.isExpired) {
-                    throw IllegalStateException("Security Lock: This .ctp profile has expired")
-                }
-                if (profile.blockRoot && com.example.security.DeviceSecurityManager.isDeviceRooted(this@CustomTunnelVpnService)) {
-                    throw IllegalStateException("Security Lock: This .ctp profile blocks rooted devices")
-                }
-                if (profile.lockedHwid.isNotBlank()) {
-                    val deviceHwid = com.example.security.DeviceSecurityManager.getHardwareId(this@CustomTunnelVpnService)
-                    if (!profile.lockedHwid.equals(deviceHwid, ignoreCase = true)) {
-                        throw IllegalStateException("Security Lock: Profile locked to another Hardware ID ($deviceHwid)")
+            lifecycleMutex.withLock {
+                if (myGen != connectionGeneration.get()) return@withLock
+                try {
+                    // Enforce .ctp security locks before initiating connection
+                    if (profile.isExpired) {
+                        throw IllegalStateException("Security Lock: This .ctp profile has expired")
                     }
-                }
+                    if (profile.blockRoot && com.example.security.DeviceSecurityManager.isDeviceRooted(this@CustomTunnelVpnService)) {
+                        throw IllegalStateException("Security Lock: This .ctp profile blocks rooted devices")
+                    }
+                    if (profile.lockedHwid.isNotBlank()) {
+                        val deviceHwid = com.example.security.DeviceSecurityManager.getHardwareId(this@CustomTunnelVpnService)
+                        if (!profile.lockedHwid.equals(deviceHwid, ignoreCase = true)) {
+                            throw IllegalStateException("Security Lock: Profile locked to another Hardware ID ($deviceHwid)")
+                        }
+                    }
 
-                // Normalize SSH profile if server address contains user/pass/port in target format (e.g. www.openx.com:80@Test:Test1)
-                var effectiveProfile = profile
-                if (effectiveProfile.protocol == ProtocolType.SSH && (effectiveProfile.server.contains("@") || effectiveProfile.server.startsWith("ssh://"))) {
-                    val parsed = SshTargetParser.parse(effectiveProfile.server, effectiveProfile.port)
-                    if (parsed != null) {
-                        effectiveProfile = effectiveProfile.copy(
-                            server = parsed.host,
-                            port = parsed.port,
-                            sshUsername = if (effectiveProfile.sshUsername.isBlank()) parsed.username else effectiveProfile.sshUsername,
-                            password = if (effectiveProfile.password.isBlank()) parsed.password else effectiveProfile.password
+                    // Normalize SSH profile if server address contains user/pass/port in target format (e.g. www.openx.com:80@Test:Test1)
+                    var effectiveProfile = profile
+                    if (effectiveProfile.protocol == ProtocolType.SSH && (effectiveProfile.server.contains("@") || effectiveProfile.server.startsWith("ssh://"))) {
+                        val parsed = SshTargetParser.parse(effectiveProfile.server, effectiveProfile.port)
+                        if (parsed != null) {
+                            effectiveProfile = effectiveProfile.copy(
+                                server = parsed.host,
+                                port = parsed.port,
+                                sshUsername = if (effectiveProfile.sshUsername.isBlank()) parsed.username else effectiveProfile.sshUsername,
+                                password = if (effectiveProfile.password.isBlank()) parsed.password else effectiveProfile.password
+                            )
+                        }
+                    }
+
+                    AppLogger.registerSensitiveHosts(
+                        effectiveProfile.server,
+                        effectiveProfile.sni,
+                        effectiveProfile.wsHost,
+                        effectiveProfile.sshSni,
+                        effectiveProfile.proxyHost,
+                        effectiveProfile.sshChainProxyHost
+                    )
+
+                    activeProfileData = effectiveProfile
+                    _vpnState.value = VpnState.Validating("Validating server ••••••••••••")
+                    updateNotification("Validating connection...", false)
+
+                    // Basic address / port validation
+                    if (effectiveProfile.server.isBlank() || effectiveProfile.port !in 1..65535) {
+                        throw IllegalArgumentException("Invalid server address or port: ••••••••••••")
+                    }
+
+                    _vpnState.value = VpnState.StartingEngine(
+                        if (effectiveProfile.protocol == ProtocolType.SSH) "SSH Tunnel Engine" else "Xray Core Engine"
+                    )
+
+                    // Sequentially stop any active engine/forwarder BEFORE closing old TUN or creating a new one
+                    cleanupSuspend()
+
+                    if (myGen != connectionGeneration.get()) return@withLock
+
+                    // Establish TUN interface
+                    val tunPfd = establishTun(effectiveProfile)
+                    if (tunPfd == null) {
+                        throw IllegalStateException("Failed to establish Android TUN interface")
+                    }
+                    tunInterface = tunPfd
+
+                    // Select and initialize engine adapter
+                    val engine: VpnEngineAdapter = when (effectiveProfile.protocol) {
+                        ProtocolType.SSH -> SshEngineAdapter()
+                        else -> XrayEngineAdapter()
+                    }
+                    currentEngine = engine
+
+                    _vpnState.value = VpnState.Connecting(effectiveProfile.name)
+                    updateNotification("Connecting to ${effectiveProfile.name}...", false)
+
+                    val started = engine.start(effectiveProfile, this@CustomTunnelVpnService, tunPfd.fd)
+                    if (!started) {
+                        throw IllegalStateException("Tunnel engine failed to start or attach")
+                    }
+
+                    if (myGen != connectionGeneration.get()) {
+                        cleanupSuspend()
+                        return@withLock
+                    }
+
+                    val connectivity = engine.getLastConnectivityResult()
+                    val isVerified = connectivity?.verified ?: false
+                    val detailText = connectivity?.diagnosticMessage
+                        ?: if (isVerified) "Internet Verified" else "Tunnel Connected — Internet Unverified"
+                    connectedTimestamp = System.currentTimeMillis()
+                    _vpnState.value = VpnState.Connected(
+                        profileName = profile.name,
+                        connectedSince = connectedTimestamp,
+                        engineName = engine.getEngineName(),
+                        isInternetVerified = isVerified,
+                        verificationDetail = detailText,
+                        rttMs = connectivity?.rttMs
+                    )
+                    retryCount = 0
+
+                    if (isVerified) {
+                        AppLogger.i(TAG, "VPN connected and internet verified for ${profile.name} ($detailText)")
+                        updateNotification("Connected • Internet Verified (${profile.name})", true)
+                    } else {
+                        AppLogger.w(
+                            TAG,
+                            "Tunnel connected to ${profile.name} — internet unverified: $detailText"
                         )
+                        updateNotification("Tunnel Connected — Internet Unverified (${profile.name})", true)
                     }
+
+                    startStatsMonitor(myGen)
+                } catch (e: Throwable) {
+                    if (myGen != connectionGeneration.get()) return@withLock
+                    AppLogger.e(TAG, "Connection failed: ${e.message}", e)
+                    cleanupSuspend()
+                    _vpnState.value = VpnState.Error(
+                        message = e.message ?: "Connection failure",
+                        code = "ERR_CONNECT_FAILED"
+                    )
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
                 }
-
-                AppLogger.registerSensitiveHosts(
-                    effectiveProfile.server,
-                    effectiveProfile.sni,
-                    effectiveProfile.wsHost,
-                    effectiveProfile.sshSni,
-                    effectiveProfile.proxyHost,
-                    effectiveProfile.sshChainProxyHost
-                )
-
-                activeProfileData = effectiveProfile
-                _vpnState.value = VpnState.Validating("Validating server ••••••••••••")
-                updateNotification("Validating connection...", false)
-
-                // Basic address / port validation
-                if (effectiveProfile.server.isBlank() || effectiveProfile.port !in 1..65535) {
-                    throw IllegalArgumentException("Invalid server address or port: ••••••••••••")
-                }
-
-                _vpnState.value = VpnState.StartingEngine(
-                    if (effectiveProfile.protocol == ProtocolType.SSH) "SSH Tunnel Engine" else "Xray Core Engine"
-                )
-
-                // Clean up any prior session resources synchronously before establishing a new TUN/engine
-                cleanup()
-
-                // Establish TUN interface
-                val tunPfd = establishTun(effectiveProfile)
-                if (tunPfd == null) {
-                    throw IllegalStateException("Failed to establish Android TUN interface")
-                }
-                tunInterface = tunPfd
-
-                // Select and initialize engine adapter
-                val engine: VpnEngineAdapter = when (effectiveProfile.protocol) {
-                    ProtocolType.SSH -> SshEngineAdapter()
-                    else -> XrayEngineAdapter()
-                }
-                currentEngine = engine
-
-                _vpnState.value = VpnState.Connecting(effectiveProfile.name)
-                updateNotification("Connecting to ${effectiveProfile.name}...", false)
-
-                val started = engine.start(effectiveProfile, this@CustomTunnelVpnService, tunPfd.fd)
-                if (!started) {
-                    throw IllegalStateException("Tunnel engine failed to start or attach")
-                }
-
-                connectedTimestamp = System.currentTimeMillis()
-                _vpnState.value = VpnState.Connected(
-                    profileName = profile.name,
-                    connectedSince = connectedTimestamp,
-                    engineName = engine.getEngineName()
-                )
-                retryCount = 0
-                AppLogger.i(TAG, "VPN successfully connected to ${profile.name}")
-                updateNotification("Connected to ${profile.name}", true)
-
-                startStatsMonitor()
-            } catch (e: Throwable) {
-                AppLogger.e(TAG, "Connection failed: ${e.message}", e)
-                cleanup()
-                _vpnState.value = VpnState.Error(
-                    message = e.message ?: "Connection failure",
-                    code = "ERR_CONNECT_FAILED"
-                )
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
             }
         }
     }
@@ -236,9 +277,14 @@ class CustomTunnelVpnService : VpnService() {
             AppLogger.i(TAG, "IPv6 leak protection active: IPv6 traffic isolated")
         }
 
-        // Per-App Split Tunneling
-        if (profile.perAppProxy && profile.selectedApps.isNotEmpty()) {
-            for (pkg in profile.selectedApps) {
+        // Per-App Split Tunneling (always exclude self package to prevent routing loops)
+        val allowedPackages = if (profile.perAppProxy) {
+            profile.selectedApps.map { it.trim() }.filter { it.isNotBlank() && it != packageName }
+        } else {
+            emptyList()
+        }
+        if (profile.perAppProxy && allowedPackages.isNotEmpty()) {
+            for (pkg in allowedPackages) {
                 try {
                     builder.addAllowedApplication(pkg)
                     AppLogger.d(TAG, "Split tunneling: including app $pkg")
@@ -264,59 +310,101 @@ class CustomTunnelVpnService : VpnService() {
         return builder.establish()
     }
 
-    private fun startStatsMonitor() {
+    private fun startStatsMonitor(generation: Long) {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
-            while (isActive && _vpnState.value is VpnState.Connected) {
+            var backgroundRechecks = 0
+            var ticksSinceLastRecheck = 0
+            while (isActive && generation == connectionGeneration.get() && _vpnState.value is VpnState.Connected) {
                 delay(1500)
+                if (generation != connectionGeneration.get()) break
                 val stats = HevTunnelManager.getStats()
                 if (stats != _trafficStats.value) {
                     _trafficStats.value = stats
+                }
+
+                val currentConnected = _vpnState.value as? VpnState.Connected ?: break
+                if (!currentConnected.isInternetVerified && backgroundRechecks < 3) {
+                    ticksSinceLastRecheck++
+                    if (stats.bytesIn > 0L || ticksSinceLastRecheck >= 5) {
+                        ticksSinceLastRecheck = 0
+                        backgroundRechecks++
+                        val engine = currentEngine
+                        val recheck = engine?.recheckConnectivity()
+                        if (recheck != null && recheck.verified && generation == connectionGeneration.get()) {
+                            _vpnState.value = currentConnected.copy(
+                                isInternetVerified = true,
+                                verificationDetail = recheck.diagnosticMessage,
+                                rttMs = recheck.rttMs
+                            )
+                            AppLogger.i(
+                                TAG,
+                                "Tunnel internet connectivity verified for ${currentConnected.profileName} (${recheck.diagnosticMessage})"
+                            )
+                            updateNotification(
+                                "Connected • Internet Verified (${currentConnected.profileName})",
+                                true
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 
     private fun disconnect() {
+        val myGen = connectionGeneration.incrementAndGet()
+        connectionJob?.cancel()
+        connectionJob = null
         serviceScope.launch {
-            _vpnState.value = VpnState.Stopping
-            AppLogger.i(TAG, "Disconnecting VPN...")
-            cleanup()
-            _vpnState.value = VpnState.Disconnected
-            _trafficStats.value = TrafficStats()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            lifecycleMutex.withLock {
+                if (myGen != connectionGeneration.get()) return@withLock
+                _vpnState.value = VpnState.Stopping
+                AppLogger.i(TAG, "Disconnecting VPN...")
+                cleanupSuspend()
+                _vpnState.value = VpnState.Disconnected
+                _trafficStats.value = TrafficStats()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
     }
 
-    private fun cleanup() {
+    private suspend fun cleanupSuspend() {
         statsJob?.cancel()
         statsJob = null
+
         val engineToStop = currentEngine
         currentEngine = null
         if (engineToStop != null) {
             try {
-                serviceScope.launch {
-                    engineToStop.stop()
-                }
+                // Stop active forwarding components (HEV + Xray/SSH) BEFORE closing the TUN fd
+                engineToStop.stop()
             } catch (e: Exception) {
                 AppLogger.w(TAG, "Error stopping current engine: ${e.message}")
             }
         }
 
-        try {
-            tunInterface?.close()
-            tunInterface = null
-            AppLogger.d(TAG, "Closed TUN file descriptor")
-        } catch (e: Exception) {
-            AppLogger.w(TAG, "Error closing TUN file descriptor: ${e.message}")
+        val tunToClose = tunInterface
+        tunInterface = null
+        if (tunToClose != null) {
+            try {
+                tunToClose.close()
+                AppLogger.d(TAG, "Closed TUN file descriptor")
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Error closing TUN file descriptor: ${e.message}")
+            }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         AppLogger.i(TAG, "CustomTunnelVpnService destroyed")
-        cleanup()
+        connectionGeneration.incrementAndGet()
+        connectionJob?.cancel()
+        runBlocking {
+            cleanupSuspend()
+        }
         try {
             connectivityManager.unregisterNetworkCallback(networkCallback)
         } catch (e: Exception) {

@@ -109,7 +109,16 @@ fun ConnectionDetailsScreen(
                     )
                 }
 
-                DetailRow("Status", if (vpnState is VpnState.Connected) "Active / Routing" else "Standby")
+                val statusLabel = when (val st = vpnState) {
+                    is VpnState.Connected -> if (st.isInternetVerified) {
+                        "Active • Internet Verified"
+                    } else {
+                        "Tunnel Connected • Internet Unverified (${st.verificationDetail})"
+                    }
+                    is VpnState.TunnelEstablished -> "Tunnel Established • Verifying Internet"
+                    else -> "Standby"
+                }
+                DetailRow("Status", statusLabel)
                 DetailRow("Primary Engine", if (selectedProfile?.protocol == com.example.model.ProtocolType.SSH) "SSH Engine (${selectedProfile?.sshMode?.badge ?: "DIRECT"})" else "Xray Core v26 JNI")
                 if (selectedProfile?.protocol == com.example.model.ProtocolType.SSH) {
                     DetailRow("SSH Tunnel Mode", selectedProfile?.sshMode?.displayName ?: "Direct")

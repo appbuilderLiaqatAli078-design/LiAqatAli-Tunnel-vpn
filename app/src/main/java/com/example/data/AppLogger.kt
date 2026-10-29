@@ -44,8 +44,18 @@ object AppLogger {
         }
     }
 
+    @Volatile
+    private var lastDebugSignature: String = ""
+
     fun log(level: LogLevel, tag: String, message: String) {
         val sanitized = redact(message)
+        if (level == LogLevel.DEBUG) {
+            val sig = "$tag:$sanitized"
+            if (sig == lastDebugSignature) {
+                return
+            }
+            lastDebugSignature = sig
+        }
         val entry = LogEntry(level = level, tag = tag, message = sanitized)
         logsQueue.add(entry)
         while (logsQueue.size > MAX_LOG_SIZE) {

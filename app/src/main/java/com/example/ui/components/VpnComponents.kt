@@ -281,7 +281,11 @@ fun StatusBadge(
     modifier: Modifier = Modifier
 ) {
     val (statusText, color) = when (state) {
-        is VpnState.Connected -> "CONNECTED • INTERNET VERIFIED" to ConnectedGreen
+        is VpnState.Connected -> if (state.isInternetVerified) {
+            "CONNECTED • INTERNET VERIFIED" to ConnectedGreen
+        } else {
+            "TUNNEL CONNECTED • INTERNET UNVERIFIED" to ConnectingAmber
+        }
         is VpnState.TunnelEstablished -> "TUNNEL ESTABLISHED • VERIFYING" to ConnectingAmber
         is VpnState.Connecting -> "CONNECTING..." to ConnectingAmber
         is VpnState.StartingEngine -> "STARTING ENGINE" to ConnectingAmber
@@ -329,7 +333,11 @@ fun ConnectButton(
     modifier: Modifier = Modifier
 ) {
     val (buttonColor, glowColor) = when (state) {
-        is VpnState.Connected -> ConnectedGreen to ConnectedGreen.copy(alpha = 0.3f)
+        is VpnState.Connected -> if (state.isInternetVerified) {
+            ConnectedGreen to ConnectedGreen.copy(alpha = 0.3f)
+        } else {
+            ConnectingAmber to ConnectingAmber.copy(alpha = 0.32f)
+        }
         is VpnState.TunnelEstablished, is VpnState.Connecting, is VpnState.StartingEngine, is VpnState.Validating, is VpnState.Reconnecting, is VpnState.Stopping ->
             ConnectingAmber to ConnectingAmber.copy(alpha = 0.35f)
         is VpnState.Error -> DisconnectedRed to DisconnectedRed.copy(alpha = 0.25f)

@@ -43,7 +43,10 @@ sealed class VpnState {
     data class Connected(
         val profileName: String,
         val connectedSince: Long,
-        val engineName: String
+        val engineName: String,
+        val isInternetVerified: Boolean = true,
+        val verificationDetail: String = "Internet Verified",
+        val rttMs: Long? = null
     ) : VpnState()
     data class Reconnecting(
         val attempt: Int,

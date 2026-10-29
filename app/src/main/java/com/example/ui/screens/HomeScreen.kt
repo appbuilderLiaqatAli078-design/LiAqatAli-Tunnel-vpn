@@ -166,6 +166,19 @@ fun HomeScreen(
             )
         }
 
+        // Unverified internet diagnostic note when tunnel is running but probe failed
+        AnimatedVisibility(visible = (vpnState as? VpnState.Connected)?.isInternetVerified == false) {
+            val unverifiedDetail = (vpnState as? VpnState.Connected)?.verificationDetail
+                ?: "Tunnel Connected — Internet Unverified"
+            Text(
+                text = unverifiedDetail,
+                style = MaterialTheme.typography.labelSmall,
+                color = com.example.ui.theme.ConnectingAmber,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp).testTag("unverified_connectivity_note")
+            )
+        }
+
         // Session Timer (if connected)
         AnimatedVisibility(visible = vpnState is VpnState.Connected) {
             val hours = elapsedSeconds / 3600

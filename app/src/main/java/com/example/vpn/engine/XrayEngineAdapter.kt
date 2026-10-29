@@ -20,12 +20,22 @@ import java.net.InetAddress
 class XrayEngineAdapter : VpnEngineAdapter {
     private val TAG = "XrayEngine"
     private var coreController: CoreController? = null
+    private var activeProfile: VpnProfile? = null
+    @Volatile
     private var isEngineRunning = false
+    @Volatile
+    private var lastConnectivityResult: ConnectivityCheckResult? = null
     private val localSocksPort = 10808
+
+    companion object {
+        @Volatile
+        private var assetsPreparedForDir: String? = null
+    }
 
     override fun getEngineName(): String = "Xray Core Engine"
     override fun getLocalSocksPort(): Int = localSocksPort
     override fun isRunning(): Boolean = isEngineRunning
+    override fun getLastConnectivityResult(): ConnectivityCheckResult? = lastConnectivityResult
 
     override suspend fun start(
         profile: VpnProfile,
@@ -34,6 +44,12 @@ class XrayEngineAdapter : VpnEngineAdapter {
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             validateProfile(profile)
+            activeProfile = profile
+            lastConnectivityResult = null
+
+            if (tunFd < 0) {
+                throw IllegalStateException("Invalid TUN file descriptor: $tunFd")
+            }
 
             AppLogger.i(TAG, "Preparing Xray Core environment and assets")
             try {
@@ -92,6 +108,14 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 throw IllegalStateException("Xray core loop failed to start")
             }
 
+            // Wait for Xray's local SOCKS5 listener on 127.0.0.1:10808 to be ready before attaching HEV
+            val socksReady = waitForLocalSocksListener("127.0.0.1", localSocksPort, timeoutMs = 3000)
+            if (!socksReady) {
+                AppLogger.e(TAG, "Local Xray SOCKS5 listener 127.0.0.1:$localSocksPort did not become ready")
+                stop()
+                throw IllegalStateException("Local Xray SOCKS5 listener on port $localSocksPort failed to bind")
+            }
+
             vpnService.notifyTunnelEstablished(
                 profile.name,
                 "Starting TUN packet forwarder..."
@@ -116,12 +140,20 @@ class XrayEngineAdapter : VpnEngineAdapter {
 
             vpnService.notifyTunnelEstablished(
                 profile.name,
-                "Xray transport established, checking route responsiveness..."
+                "Tunnel established, verifying internet connectivity..."
             )
-            AppLogger.i(TAG, "Checking outbound responsiveness through ${profile.protocol.displayName} server...")
-            verifyTunnelConnectivity(controller, profile)
+            AppLogger.i(TAG, "Verifying real outbound connectivity through ${profile.protocol.displayName} server...")
+            val checkResult = verifyTunnelConnectivity(controller, profile)
+            lastConnectivityResult = checkResult
 
-            AppLogger.i(TAG, "Xray Engine and HEV forwarder active and routing traffic")
+            if (checkResult.verified) {
+                AppLogger.i(TAG, "Xray Engine and HEV forwarder active — internet connectivity verified (${checkResult.diagnosticMessage})")
+            } else {
+                AppLogger.w(
+                    TAG,
+                    "Xray Engine and HEV forwarder active, but internet probe did not succeed: ${checkResult.diagnosticMessage}"
+                )
+            }
             true
         } catch (e: Throwable) {
             val cleanMsg = AppLogger.redact(e.message ?: "Unknown Xray error")
@@ -131,47 +163,95 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
     }
 
-    private fun verifyTunnelConnectivity(controller: CoreController, profile: VpnProfile) {
+    override suspend fun recheckConnectivity(): ConnectivityCheckResult? = withContext(Dispatchers.IO) {
+        val controller = coreController ?: return@withContext null
+        val profile = activeProfile ?: return@withContext null
+        if (!isEngineRunning || !controller.isRunning) return@withContext null
+        val result = verifyTunnelConnectivity(controller, profile)
+        lastConnectivityResult = result
+        result
+    }
+
+    private fun waitForLocalSocksListener(host: String, port: Int, timeoutMs: Int): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                java.net.Socket().use { sock ->
+                    sock.connect(java.net.InetSocketAddress(host, port), 250)
+                    return true
+                }
+            } catch (_: Throwable) {
+                try { Thread.sleep(50) } catch (_: InterruptedException) { break }
+            }
+        }
+        return false
+    }
+
+    fun verifyTunnelConnectivity(controller: CoreController, profile: VpnProfile): ConnectivityCheckResult {
         val probeUrls = listOf(
             "http://cp.cloudflare.com/generate_204",
             "http://connectivitycheck.gstatic.com/generate_204",
             "https://cp.cloudflare.com/generate_204"
         )
 
-        // 1. Try a fast probe through the local SOCKS5 inbound (exercises the exact AsIs routing path)
+        var lastError: String? = null
+        var lastCategory = ProbeFailureCategory.TIMEOUT
+
+        // 1. Probe through the actual local SOCKS5 inbound (exercises HEV -> socks-in -> routing -> proxy)
         for (url in probeUrls.take(2)) {
-            val rtt = probeViaLocalSocks(url, timeoutMs = 4500)
-            if (rtt > 0) {
-                AppLogger.i(TAG, "Outbound tunnel verified via SOCKS5 $url (RTT: ${rtt}ms)")
-                return
+            val socksOutcome = probeViaLocalSocks(url, timeoutMs = 4500)
+            if (socksOutcome.rttMs > 0) {
+                val msg = "Verified via SOCKS5 (${socksOutcome.rttMs}ms)"
+                AppLogger.i(TAG, "Outbound tunnel verified via SOCKS5 $url (RTT: ${socksOutcome.rttMs}ms)")
+                return ConnectivityCheckResult(
+                    verified = true,
+                    rttMs = socksOutcome.rttMs,
+                    endpoint = url,
+                    failureCategory = ProbeFailureCategory.NONE,
+                    diagnosticMessage = msg
+                )
+            } else if (socksOutcome.error != null) {
+                lastError = socksOutcome.error
+                lastCategory = classifyProbeError(socksOutcome.error)
             }
         }
 
-        // 2. Fallback to Xray controller measureDelay
-        var lastError: String? = null
+        // 2. Independent check via Xray CoreController.measureDelay
         for (url in probeUrls) {
             try {
                 val delayMs = controller.measureDelay(url)
                 if (delayMs > 0) {
+                    val msg = "Verified (${delayMs}ms)"
                     AppLogger.i(TAG, "Outbound tunnel verified via $url (RTT: ${delayMs}ms)")
-                    return
+                    return ConnectivityCheckResult(
+                        verified = true,
+                        rttMs = delayMs,
+                        endpoint = url,
+                        failureCategory = ProbeFailureCategory.NONE,
+                        diagnosticMessage = msg
+                    )
                 }
             } catch (e: Throwable) {
                 val msg = AppLogger.redact(e.message ?: e.javaClass.simpleName)
                 lastError = msg
-                AppLogger.d(TAG, "Outbound probe note for $url: $msg")
+                lastCategory = classifyProbeError(msg)
+                AppLogger.w(TAG, "Outbound probe to $url failed [${lastCategory.name}]: $msg")
             }
         }
 
-        // Do NOT kill a running tunnel if ping is slow or blocked by the carrier/server
-        val note = summarizeXrayError(lastError, profile)
-        AppLogger.w(
-            TAG,
-            "Ping check slow or blocked ($note) — keeping ${profile.protocol.displayName} tunnel connected"
+        val diagnostic = summarizeXrayError(lastError, profile)
+        return ConnectivityCheckResult(
+            verified = false,
+            rttMs = null,
+            endpoint = null,
+            failureCategory = lastCategory,
+            diagnosticMessage = diagnostic
         )
     }
 
-    private fun probeViaLocalSocks(urlStr: String, timeoutMs: Int): Long {
+    private data class SocksProbeOutcome(val rttMs: Long, val error: String? = null)
+
+    private fun probeViaLocalSocks(urlStr: String, timeoutMs: Int): SocksProbeOutcome {
         return try {
             val startNs = System.nanoTime()
             val proxy = java.net.Proxy(
@@ -188,30 +268,58 @@ class XrayEngineAdapter : VpnEngineAdapter {
             val code = conn.responseCode
             conn.disconnect()
             if (code in 200..399) {
-                ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+                SocksProbeOutcome(((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L))
             } else {
-                -1L
+                SocksProbeOutcome(-1L, "Probe HTTP status $code from $urlStr")
             }
-        } catch (_: Throwable) {
-            -1L
+        } catch (e: Throwable) {
+            SocksProbeOutcome(-1L, AppLogger.redact(e.message ?: e.javaClass.simpleName))
         }
     }
 
-    private fun summarizeXrayError(rawError: String?, profile: VpnProfile): String {
-        val err = rawError ?: "Timed out waiting for response through ${profile.server}:${profile.port}"
+    fun classifyProbeError(rawError: String?): ProbeFailureCategory {
+        if (rawError.isNullOrBlank()) return ProbeFailureCategory.TIMEOUT
+        val err = rawError.lowercase()
         return when {
-            err.contains("websocket: bad handshake", ignoreCase = true) ->
-                "WebSocket handshake rejected by ${profile.server}:${profile.port} (check WS path '${profile.path.ifEmpty { "/" }}' and Host/SNI '${profile.wsHost.ifBlank { profile.sni }}')"
-            err.contains("tls:", ignoreCase = true) || err.contains("x509:", ignoreCase = true) ->
-                "TLS/Certificate handshake failed with ${profile.server}:${profile.port} (SNI='${profile.sni.ifBlank { profile.server }}'): $err"
-            err.contains("reality", ignoreCase = true) ->
-                "REALITY handshake failed with ${profile.server}:${profile.port} (check pbk, sid, and sni): $err"
-            err.contains("connection refused", ignoreCase = true) ->
-                "Connection refused by remote server ${profile.server}:${profile.port}"
-            err.contains("i/o timeout", ignoreCase = true) || err.contains("deadline exceeded", ignoreCase = true) ->
-                "Tunnel established locally, but remote ${profile.protocol.displayName} server ${profile.server}:${profile.port} timed out forwarding traffic (check UUID, security=${profile.security}, transport=${profile.network})"
+            err.contains("closed pipe") || err.contains("eof") || err.contains("broken pipe") || err.contains("connection reset") ->
+                ProbeFailureCategory.CLOSED_PIPE
+            err.contains("websocket: bad handshake") || err.contains("unexpected http status") ->
+                ProbeFailureCategory.WEBSOCKET_HANDSHAKE
+            err.contains("tls:") || err.contains("x509:") || err.contains("certificate") ->
+                ProbeFailureCategory.TLS_HANDSHAKE
+            err.contains("reality") || err.contains("invalid user") || err.contains("auth") ->
+                ProbeFailureCategory.AUTH_OR_PROTOCOL
+            err.contains("connection refused") ->
+                ProbeFailureCategory.CONNECTION_REFUSED
+            err.contains("no such host") || err.contains("unknownhost") || err.contains("lookup ") || err.contains("dns") ->
+                ProbeFailureCategory.DNS_FAILURE
+            err.contains("timeout") || err.contains("timed out") || err.contains("deadline exceeded") ->
+                ProbeFailureCategory.TIMEOUT
             else ->
-                "Remote ${profile.protocol.displayName} server ${profile.server}:${profile.port} failed to forward traffic: $err"
+                ProbeFailureCategory.BLOCKED_PROBE
+        }
+    }
+
+    fun summarizeXrayError(rawError: String?, profile: VpnProfile): String {
+        val err = rawError ?: "Timed out waiting for response through ${profile.server}:${profile.port}"
+        val category = classifyProbeError(rawError)
+        return when (category) {
+            ProbeFailureCategory.WEBSOCKET_HANDSHAKE ->
+                "WebSocket handshake rejected by ${profile.server}:${profile.port} (check WS path '${profile.path.ifEmpty { "/" }}' and Host/SNI '${profile.wsHost.ifBlank { profile.sni }}')"
+            ProbeFailureCategory.TLS_HANDSHAKE ->
+                "TLS/Certificate handshake failed with ${profile.server}:${profile.port} (SNI='${profile.sni.ifBlank { profile.server }}'): $err"
+            ProbeFailureCategory.AUTH_OR_PROTOCOL ->
+                "Protocol/REALITY handshake failed with ${profile.server}:${profile.port}: $err"
+            ProbeFailureCategory.CONNECTION_REFUSED ->
+                "Connection refused by remote server ${profile.server}:${profile.port}"
+            ProbeFailureCategory.DNS_FAILURE ->
+                "DNS lookup failed while probing through ${profile.protocol.displayName} tunnel: $err"
+            ProbeFailureCategory.CLOSED_PIPE ->
+                "Remote ${profile.protocol.displayName} endpoint closed stream during probe (closed pipe — check UUID, WS Host/SNI, or server status)"
+            ProbeFailureCategory.TIMEOUT ->
+                "Remote ${profile.protocol.displayName} server ${profile.server}:${profile.port} timed out on connectivity probe"
+            else ->
+                "Connectivity probe blocked or failed (${profile.protocol.displayName}): $err"
         }
     }
 
@@ -268,13 +376,15 @@ class XrayEngineAdapter : VpnEngineAdapter {
         return Base64.encodeToString(seed, Base64.NO_PADDING or Base64.URL_SAFE or Base64.NO_WRAP)
     }
 
+    private fun isIpLiteral(host: String): Boolean {
+        val trimmed = host.trim().removePrefix("[")?.removeSuffix("]") ?: return false
+        if (trimmed.isEmpty()) return false
+        return trimmed.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")) || trimmed.contains(":")
+    }
+
     private fun resolveServerAddresses(host: String): List<String> {
         val trimmed = host.trim().removePrefix("[")?.removeSuffix("]") ?: return emptyList()
-        if (trimmed.isEmpty()) return emptyList()
-        // Check if already IPv4 literal or IPv6 literal
-        if (trimmed.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")) || trimmed.contains(":")) {
-            return emptyList()
-        }
+        if (trimmed.isEmpty() || isIpLiteral(trimmed)) return emptyList()
         return try {
             InetAddress.getAllByName(trimmed)
                 .mapNotNull { it.hostAddress }
@@ -288,7 +398,7 @@ class XrayEngineAdapter : VpnEngineAdapter {
 
     override suspend fun stop() = withContext(Dispatchers.IO) {
         try {
-            AppLogger.i(TAG, "Stopping Xray core and HEV forwarder")
+            AppLogger.i(TAG, "Stopping HEV forwarder and Xray core")
             isEngineRunning = false
             HevTunnelManager.stop()
             coreController?.let {
@@ -304,6 +414,12 @@ class XrayEngineAdapter : VpnEngineAdapter {
 
     private fun setupAssets(vpnService: CustomTunnelVpnService) {
         val assetDir = vpnService.filesDir
+        val dirPath = assetDir.absolutePath
+        val geoipFile = File(assetDir, "geoip.dat")
+        val geositeFile = File(assetDir, "geosite.dat")
+        if (assetsPreparedForDir == dirPath && geoipFile.exists() && geoipFile.length() > 0L && geositeFile.exists() && geositeFile.length() > 0L) {
+            return
+        }
         listOf("geoip.dat", "geosite.dat").forEach { filename ->
             val target = File(assetDir, filename)
             if (!target.exists() || target.length() == 0L) {
@@ -319,12 +435,22 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 }
             }
         }
+        assetsPreparedForDir = dirPath
     }
 
     private fun normalizePath(rawPath: String): String {
         val trimmed = rawPath.trim()
         if (trimmed.isEmpty()) return "/"
         return if (trimmed.startsWith("/")) trimmed else "/$trimmed"
+    }
+
+    private fun formatTcpDnsServer(rawDns: String): String {
+        val trimmed = rawDns.trim().ifBlank { "1.1.1.1" }
+        if (trimmed.contains("://")) {
+            val afterScheme = trimmed.substringAfter("://")
+            return if (afterScheme.contains(":")) trimmed else "$trimmed:53"
+        }
+        return if (trimmed.contains(":")) "tcp://$trimmed" else "tcp://$trimmed:53"
     }
 
     fun buildXrayConfig(
@@ -375,11 +501,15 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
 
         val normalizedSecurity = profile.security.trim().lowercase().ifEmpty { "none" }
+        val serverTrimmed = profile.server.trim()
+        // Only fall back TLS SNI to profile.server when profile.server is a DNS hostname (RFC 6066 forbids IP literals in SNI)
         val effectiveSni = profile.sni.trim().ifBlank {
-            profile.wsHost.trim().ifBlank { profile.server.trim() }
+            profile.wsHost.trim().ifBlank {
+                if (!isIpLiteral(serverTrimmed)) serverTrimmed else ""
+            }
         }
         val effectiveWsHost = profile.wsHost.trim().ifBlank {
-            profile.sni.trim().ifBlank { profile.server.trim() }
+            profile.sni.trim().ifBlank { serverTrimmed }
         }
 
         // Outbounds: primary proxy outbound + direct + dns-out + blackhole
@@ -612,7 +742,8 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 }
 
                 put("sockopt", JSONObject().apply {
-                    put("domainStrategy", "AsIs")
+                    // Use pre-resolved IPs from dns.hosts when available so Go on Android does not rely on /etc/resolv.conf
+                    put("domainStrategy", if (resolvedServerIps.isNotEmpty()) "UseIP" else "AsIs")
                 })
             }
             put("streamSettings", streamSettings)
@@ -629,7 +760,7 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
         outbounds.put(directOutbound)
 
-        // DNS outbound: hijacks port-53 queries from TUN so Xray resolves DNS over TCP/UDP through the proxy outbound
+        // DNS outbound: hijacks port-53 queries from TUN so Xray resolves DNS over TCP through the proxy outbound
         val dnsOutbound = JSONObject().apply {
             put("tag", "dns-out")
             put("protocol", "dns")
@@ -656,25 +787,27 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 put("cloudflare-dns.com", "1.1.1.1")
                 if (resolvedServerIps.isNotEmpty()) {
                     val serverKey = profile.server.trim()
-                    if (resolvedServerIps.size == 1) {
-                        put(serverKey, resolvedServerIps[0])
+                    val valueToPut: Any = if (resolvedServerIps.size == 1) {
+                        resolvedServerIps[0]
                     } else {
-                        val ipArr = JSONArray()
-                        resolvedServerIps.forEach { ipArr.put(it) }
-                        put(serverKey, ipArr)
+                        JSONArray().apply { resolvedServerIps.forEach { put(it) } }
+                    }
+                    put(serverKey, valueToPut)
+                    if (serverKey.lowercase() != serverKey) {
+                        put(serverKey.lowercase(), valueToPut)
                     }
                 }
             }
             put("hosts", hosts)
 
             val primaryDns = profile.dnsPrimary.trim().ifBlank { "1.1.1.1" }
-            val primaryTcp = if (primaryDns.contains("://")) primaryDns else "tcp://$primaryDns"
+            val primaryTcp = formatTcpDnsServer(primaryDns)
             val servers = JSONArray().put(primaryTcp)
             if (profile.dnsSecondary.isNotBlank()) {
                 val secondaryDns = profile.dnsSecondary.trim()
-                val secondaryTcp = if (secondaryDns.contains("://")) secondaryDns else "tcp://$secondaryDns"
-                servers.put(secondaryTcp)
+                servers.put(formatTcpDnsServer(secondaryDns))
             }
+            servers.put(primaryDns)
             put("servers", servers)
         }
         root.put("dns", dns)

@@ -680,15 +680,15 @@ class ExampleUnitTest {
         }
         assertTrue("Expected dns-out outbound in Xray config", hasDnsOut)
 
-        // Verify pre-resolved server host is injected into dns.hosts and both routing and sockopt use AsIs
+        // Verify pre-resolved server host is injected into dns.hosts, proxy sockopt uses UseIP (to avoid Go /etc/resolv.conf failure on Android), and routing uses AsIs
         val dns = json.getJSONObject("dns")
         assertEquals("dns-in", dns.getString("tag"))
         val hosts = dns.getJSONObject("hosts")
         assertTrue(hosts.has("cf-tunnel.example.com"))
         val dnsServers = dns.getJSONArray("servers")
-        assertTrue(dnsServers.getString(0).startsWith("tcp://"))
+        assertEquals("tcp://1.1.1.1:53", dnsServers.getString(0))
         val proxySockopt = outbounds.getJSONObject(0).getJSONObject("streamSettings").getJSONObject("sockopt")
-        assertEquals("AsIs", proxySockopt.getString("domainStrategy"))
+        assertEquals("UseIP", proxySockopt.getString("domainStrategy"))
         assertEquals("AsIs", json.getJSONObject("routing").getString("domainStrategy"))
 
         // Verify first routing rule routes port 53 to dns-out and second routes dns-in to proxy
@@ -883,5 +883,117 @@ class ExampleUnitTest {
         assertEquals("ws", p4.network)
         assertEquals("/sr-ws", p4.path)
         assertEquals("tls", p4.security)
+    }
+
+    @Test
+    fun testConnectivityProbeClassificationAndHonestVpnState() {
+        val adapter = XrayEngineAdapter()
+
+        assertEquals(
+            com.example.vpn.engine.ProbeFailureCategory.CLOSED_PIPE,
+            adapter.classifyProbeError("Get \"http://cp.cloudflare.com/generate_204\": io: read/write on closed pipe")
+        )
+        assertEquals(
+            com.example.vpn.engine.ProbeFailureCategory.TIMEOUT,
+            adapter.classifyProbeError("context deadline exceeded (Client.Timeout exceeded while awaiting headers)")
+        )
+        assertEquals(
+            com.example.vpn.engine.ProbeFailureCategory.DNS_FAILURE,
+            adapter.classifyProbeError("lookup cp.cloudflare.com: no such host")
+        )
+        assertEquals(
+            com.example.vpn.engine.ProbeFailureCategory.CONNECTION_REFUSED,
+            adapter.classifyProbeError("dial tcp 104.21.1.1:443: connect: connection refused")
+        )
+        assertEquals(
+            com.example.vpn.engine.ProbeFailureCategory.TLS_HANDSHAKE,
+            adapter.classifyProbeError("tls: x509: certificate signed by unknown authority")
+        )
+        assertEquals(
+            com.example.vpn.engine.ProbeFailureCategory.WEBSOCKET_HANDSHAKE,
+            adapter.classifyProbeError("websocket: bad handshake (HTTP 403)")
+        )
+
+        val unverifiedState = VpnState.Connected(
+            profileName = "vmess test",
+            connectedSince = System.currentTimeMillis(),
+            engineName = "Xray Core v26 JNI",
+            isInternetVerified = false,
+            verificationDetail = "Tunnel Connected — Internet Unverified (closed pipe: remote server closed outbound stream)"
+        )
+        assertTrue(unverifiedState.isConnected)
+        assertFalse(unverifiedState.isInternetVerified)
+        assertTrue(unverifiedState.verificationDetail.contains("Internet Unverified"))
+    }
+
+    @Test
+    fun testIpLiteralServerDoesNotInjectInvalidTlsSni() {
+        val adapter = XrayEngineAdapter()
+        val ipProfile = VpnProfile(
+            id = UUID.randomUUID().toString(),
+            name = "Direct IP TLS Node",
+            protocol = ProtocolType.VLESS,
+            server = "141.193.213.10",
+            port = 443,
+            password = "d342d110-d4a3-4513-bfa6-07a5e0f0ff37",
+            security = "tls",
+            network = "ws",
+            path = "/ws",
+            sni = "",
+            wsHost = ""
+        )
+
+        val json = JSONObject(adapter.buildXrayConfig(ipProfile, 10808))
+        val tlsSettings = json.getJSONArray("outbounds")
+            .getJSONObject(0)
+            .getJSONObject("streamSettings")
+            .getJSONObject("tlsSettings")
+        assertFalse("IP literal must not be placed into TLS serverName (RFC 6066)", tlsSettings.has("serverName"))
+    }
+
+    @Test
+    fun testSshTargetParserNumericPasswordsAndKeyboardInteractive() {
+        // Numeric password in user:pass@host:port must NOT swap host and username
+        val p1 = com.example.parser.SshTargetParser.parse("myuser:12345@ssh.example.com:22")
+        assertNotNull(p1)
+        assertEquals("ssh.example.com", p1!!.host)
+        assertEquals(22, p1.port)
+        assertEquals("myuser", p1.username)
+        assertEquals("12345", p1.password)
+
+        // Numeric password in user:pass@host without explicit port
+        val p2 = com.example.parser.SshTargetParser.parse("myuser:8080@ssh.example.com")
+        assertNotNull(p2)
+        assertEquals("ssh.example.com", p2!!.host)
+        assertEquals(22, p2.port)
+        assertEquals("myuser", p2.username)
+        assertEquals("8080", p2.password)
+
+        // Numeric password in host:port@user:pass
+        val p3 = com.example.parser.SshTargetParser.parse("ssh.example.com:80@myuser:12345")
+        assertNotNull(p3)
+        assertEquals("ssh.example.com", p3!!.host)
+        assertEquals(80, p3.port)
+        assertEquals("myuser", p3.username)
+        assertEquals("12345", p3.password)
+
+        // Password containing colons
+        val p4 = com.example.parser.SshTargetParser.parse("ssh.example.com:80@myuser:pass:with:colons")
+        assertNotNull(p4)
+        assertEquals("ssh.example.com", p4!!.host)
+        assertEquals(80, p4.port)
+        assertEquals("myuser", p4.username)
+        assertEquals("pass:with:colons", p4.password)
+
+        // Verify SshEngineAdapter UserInfo + UIKeyboardInteractive supplies password for PAM prompts
+        val sshAdapter = com.example.vpn.engine.SshEngineAdapter()
+        val userInfo = sshAdapter.createSshUserInfo("SecretPamPass!", "")
+        assertTrue(userInfo.promptPassword("Password:"))
+        assertEquals("SecretPamPass!", userInfo.password)
+        val kbInteractive = userInfo as com.jcraft.jsch.UIKeyboardInteractive
+        val responses = kbInteractive.promptKeyboardInteractive("dest", "name", "instruction", arrayOf("Password: "), booleanArrayOf(false))
+        assertNotNull(responses)
+        assertEquals(1, responses!!.size)
+        assertEquals("SecretPamPass!", responses[0])
     }
 }

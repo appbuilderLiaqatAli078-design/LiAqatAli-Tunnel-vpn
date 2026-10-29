@@ -9,6 +9,8 @@ import com.example.vpn.engine.ssh.SshSocketFactory
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
+import com.jcraft.jsch.UIKeyboardInteractive
+import com.jcraft.jsch.UserInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,27 +34,51 @@ class SshEngineAdapter : VpnEngineAdapter {
     private val activeChannels = CopyOnWriteArrayList<ChannelDirectTCPIP>()
     private val engineScope = CoroutineScope(Dispatchers.IO + Job())
     private var currentMode: SshTunnelMode = SshTunnelMode.DIRECT
+    private var activeProfile: VpnProfile? = null
+    @Volatile
+    private var lastConnectivityResult: ConnectivityCheckResult = ConnectivityCheckResult(
+        verified = false,
+        failureCategory = ProbeFailureCategory.BLOCKED_PROBE,
+        diagnosticMessage = "Connectivity check not run yet"
+    )
 
     override fun getEngineName(): String = "SSH Engine (${currentMode.badge})"
     override fun getLocalSocksPort(): Int = localSocksPort
     override fun isRunning(): Boolean = isEngineRunning
+    override fun getLastConnectivityResult(): ConnectivityCheckResult = lastConnectivityResult
+
+    override suspend fun recheckConnectivity(): ConnectivityCheckResult = withContext(Dispatchers.IO) {
+        val session = jschSession
+        val profile = activeProfile
+        if (session == null || !session.isConnected || profile == null) {
+            return@withContext lastConnectivityResult
+        }
+        val result = verifySshOutboundForwarding(session, profile)
+        lastConnectivityResult = result
+        result
+    }
 
     override suspend fun start(
         profile: VpnProfile,
         vpnService: CustomTunnelVpnService,
         tunFd: Int
     ): Boolean = withContext(Dispatchers.IO) {
+        var advertisedAuthMethods = ""
         try {
             currentMode = profile.sshMode
 
             // Normalize target string if server contains user/pass/port info (e.g. www.openx.com:80@Test:Test1)
-            val parsedTarget = if (profile.server.contains("@") || profile.server.startsWith("ssh://")) {
+            val parsedTarget = if (profile.server.contains("@") || profile.server.startsWith("ssh://", ignoreCase = true) || profile.server.contains(":")) {
                 SshTargetParser.parse(profile.server, profile.port)
             } else null
 
-            val effectiveServer = parsedTarget?.host ?: profile.server
+            val effectiveServer = (parsedTarget?.host ?: profile.server).trim()
             val effectivePort = parsedTarget?.port ?: profile.port
-            val effectiveUser = if (profile.sshUsername.isNotBlank()) profile.sshUsername else (parsedTarget?.username?.ifBlank { "root" } ?: "root")
+            val effectiveUser = (if (profile.sshUsername.isNotBlank() && profile.sshUsername != "root") {
+                profile.sshUsername
+            } else {
+                parsedTarget?.username?.ifBlank { profile.sshUsername.ifBlank { "root" } } ?: profile.sshUsername.ifBlank { "root" }
+            }).trim()
             val effectivePass = if (profile.password.isNotBlank()) profile.password else (parsedTarget?.password ?: "")
             val effectiveProfile = profile.copy(
                 server = effectiveServer,
@@ -60,12 +86,22 @@ class SshEngineAdapter : VpnEngineAdapter {
                 sshUsername = effectiveUser,
                 password = effectivePass
             )
+            activeProfile = effectiveProfile
 
-            AppLogger.i(TAG, "Initializing SSH [${effectiveProfile.sshMode.displayName}] to ${effectiveProfile.server}:${effectiveProfile.port}")
+            val hasPass = effectiveProfile.password.isNotEmpty()
+            val hasKey = effectiveProfile.sshPrivateKey.isNotBlank()
+            AppLogger.i(
+                TAG,
+                "Initializing SSH [${effectiveProfile.sshMode.displayName}] profile='${effectiveProfile.name}' user='${effectiveProfile.sshUsername}' (password=${if (hasPass) "set" else "empty"}, privateKey=${if (hasKey) "set" else "none"})"
+            )
+            if (!hasPass && !hasKey) {
+                AppLogger.w(TAG, "SSH credentials warning: both password and private key are empty for user '${effectiveProfile.sshUsername}'")
+            }
+
             val jsch = JSch()
 
             // 1. Configure Private Key identity if provided
-            if (effectiveProfile.sshPrivateKey.isNotBlank()) {
+            if (hasKey) {
                 val keyBytes = effectiveProfile.sshPrivateKey.trim().toByteArray(Charsets.UTF_8)
                 val passBytes = if (effectiveProfile.sshPassphrase.isNotBlank()) {
                     effectiveProfile.sshPassphrase.toByteArray(Charsets.UTF_8)
@@ -78,9 +114,11 @@ class SshEngineAdapter : VpnEngineAdapter {
             val customSocketFactory = SshSocketFactory(effectiveProfile, vpnService)
 
             val session = jsch.getSession(effectiveProfile.sshUsername, effectiveProfile.server, effectiveProfile.port)
-            if (effectiveProfile.password.isNotBlank()) {
+            if (hasPass) {
                 session.setPassword(effectiveProfile.password)
             }
+            // Provide UserInfo + UIKeyboardInteractive so servers using PAM / keyboard-interactive password prompts succeed
+            session.userInfo = createSshUserInfo(effectiveProfile.password, effectiveProfile.sshPassphrase)
             session.setSocketFactory(customSocketFactory)
 
             // 3. Security, handshake stage logging, and connection configuration
@@ -88,6 +126,9 @@ class SshEngineAdapter : VpnEngineAdapter {
                 override fun isEnabled(level: Int): Boolean = level >= com.jcraft.jsch.Logger.INFO
                 override fun log(level: Int, message: String?) {
                     if (message.isNullOrBlank()) return
+                    if (message.contains("Authentications that can continue:", ignoreCase = true)) {
+                        advertisedAuthMethods = message.substringAfter("Authentications that can continue:", "").trim()
+                    }
                     val sanitized = AppLogger.redact(message)
                     when {
                         level >= com.jcraft.jsch.Logger.ERROR -> AppLogger.e(TAG, "[SSH-Handshake] $sanitized")
@@ -107,12 +148,13 @@ class SshEngineAdapter : VpnEngineAdapter {
 
             val config = java.util.Properties()
             config["StrictHostKeyChecking"] = "no"
-            config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
+            config["PreferredAuthentications"] = if (hasKey) {
+                "publickey,password,keyboard-interactive"
+            } else {
+                "password,keyboard-interactive,publickey"
+            }
             session.setConfig(config)
             // NOTE: JSch timeouts and serverAliveInterval are in MILLISECONDS (not seconds).
-            // Setting serverAliveInterval=30 sets session.timeout=30ms, which causes
-            // Session.write() during initial key exchange (in_kex=true) to abort with
-            // "timeout in waiting for rekeying process." whenever KEX takes > 30ms.
             session.timeout = 30_000
             session.serverAliveCountMax = 3
 
@@ -132,7 +174,7 @@ class SshEngineAdapter : VpnEngineAdapter {
                 effectiveProfile.name,
                 "SSH session authenticated, verifying internet forwarding..."
             )
-            verifySshOutboundForwarding(session, effectiveProfile)
+            lastConnectivityResult = verifySshOutboundForwarding(session, effectiveProfile)
 
             // 4. Configure Local or Remote Port Forwarding if requested
             if (profile.sshMode == SshTunnelMode.LOCAL_PORT_FORWARDING) {
@@ -181,13 +223,20 @@ class SshEngineAdapter : VpnEngineAdapter {
             }
 
             isEngineRunning = true
-            AppLogger.i(TAG, "SSH Tunnel Engine and HEV forwarder successfully running [${profile.sshMode.displayName}]")
+            AppLogger.i(TAG, "SSH Tunnel Engine and HEV forwarder running [${profile.sshMode.displayName}]")
             true
         } catch (e: Throwable) {
             val userFriendlyMsg = when {
                 e is java.net.ConnectException -> "Connection refused: Unable to connect to ${profile.server}:${profile.port}"
                 e is java.net.SocketTimeoutException -> "Connection timed out connecting to ${profile.server}:${profile.port}"
-                e.message?.contains("Auth fail", ignoreCase = true) == true -> "SSH Authentication failed: Invalid username or password/key"
+                e.message?.contains("Auth fail", ignoreCase = true) == true ||
+                e.message?.contains("Auth cancel", ignoreCase = true) == true -> {
+                    val userUsed = activeProfile?.sshUsername ?: profile.sshUsername
+                    val passState = if ((activeProfile?.password ?: profile.password).isNotEmpty()) "provided" else "EMPTY"
+                    val keyState = if ((activeProfile?.sshPrivateKey ?: profile.sshPrivateKey).isNotBlank()) "provided" else "none"
+                    val methodsNote = if (advertisedAuthMethods.isNotBlank()) " (server methods: $advertisedAuthMethods)" else ""
+                    "SSH Authentication failed for user '$userUsed'$methodsNote [password=$passState, key=$keyState]: Server rejected credentials or account is expired/disabled"
+                }
                 e.message?.contains("rekeying", ignoreCase = true) == true -> "SSH key exchange timed out or transport desynchronized: ${e.message}"
                 e.message?.contains("400", ignoreCase = true) == true -> e.message ?: "HTTP 400 Bad Request from server"
                 e.message?.contains("rejected", ignoreCase = true) == true -> e.message ?: "Server rejected HTTP tunnel"
@@ -201,19 +250,63 @@ class SshEngineAdapter : VpnEngineAdapter {
         }
     }
 
-    private fun verifySshOutboundForwarding(session: Session, profile: VpnProfile) {
+    internal fun createSshUserInfo(password: String, passphrase: String): UserInfo {
+        return object : UserInfo, UIKeyboardInteractive {
+            override fun getPassphrase(): String? = passphrase.ifEmpty { null }
+            override fun getPassword(): String? = password.ifEmpty { null }
+            override fun promptPassword(message: String?): Boolean = password.isNotEmpty()
+            override fun promptPassphrase(message: String?): Boolean = passphrase.isNotEmpty()
+            override fun promptYesNo(message: String?): Boolean = true
+            override fun showMessage(message: String?) {
+                if (!message.isNullOrBlank()) {
+                    AppLogger.d(TAG, "[SSH-Banner] ${AppLogger.redact(message.trim())}")
+                }
+            }
+
+            override fun promptKeyboardInteractive(
+                destination: String?,
+                name: String?,
+                instruction: String?,
+                prompt: Array<out String>?,
+                echo: BooleanArray?
+            ): Array<String>? {
+                if (prompt == null || prompt.isEmpty()) return emptyArray()
+                if (password.isEmpty()) return null
+                return Array(prompt.size) { password }
+            }
+        }
+    }
+
+    private fun verifySshOutboundForwarding(session: Session, profile: VpnProfile): ConnectivityCheckResult {
         val dnsProbeHost = profile.dnsPrimary.ifBlank { "1.1.1.1" }
-        try {
+        val startMs = System.currentTimeMillis()
+        return try {
             val probeChannel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
             probeChannel.setHost(dnsProbeHost)
             probeChannel.setPort(53)
             probeChannel.connect(8000)
+            val rtt = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
             probeChannel.disconnect()
-            AppLogger.i(TAG, "Verified SSH direct-tcpip outbound forwarding via $dnsProbeHost:53")
+            AppLogger.i(TAG, "Verified SSH direct-tcpip outbound forwarding via $dnsProbeHost:53 (${rtt} ms)")
+            ConnectivityCheckResult(
+                verified = true,
+                rttMs = rtt,
+                endpoint = "$dnsProbeHost:53",
+                failureCategory = ProbeFailureCategory.NONE,
+                diagnosticMessage = "Internet Verified (${rtt} ms via SSH direct-tcpip)"
+            )
         } catch (e: Exception) {
+            val errMsg = e.message ?: "SSH direct-tcpip channel failed"
             AppLogger.w(
                 TAG,
-                "SSH direct-tcpip probe to $dnsProbeHost:53 returned warning (${e.message}); continuing with active SSH session"
+                "SSH direct-tcpip probe to $dnsProbeHost:53 failed ($errMsg); tunnel is up but internet forwarding is unverified"
+            )
+            ConnectivityCheckResult(
+                verified = false,
+                rttMs = null,
+                endpoint = "$dnsProbeHost:53",
+                failureCategory = ProbeFailureCategory.BLOCKED_PROBE,
+                diagnosticMessage = "Tunnel Connected — Internet Unverified (SSH forward probe: $errMsg)"
             )
         }
     }
