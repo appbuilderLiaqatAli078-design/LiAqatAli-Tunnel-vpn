@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for fixing hidden animation/notification battery loops, resolving SSH SOCKS5 and VPN cleanup race conditions, and adding an interactive zero-idle-drain finger-swipe liquid wave inside the Connect button and status card.",
-  "updatedAt":  "2026-10-28T17:22:45.625380338Z",
+  "summary":  "Implementation plan to fix VLESS/VMess/V2Ray 'io: read/write on closed pipe' errors, switch Xray routing/sockopt to AsIs so remote servers resolve domains directly, support WebSocket Early Data (?ed=2048), and keep VPN connected when startup ping is slow or blocked on mobile networks.",
+  "updatedAt":  "2026-10-29T04:37:19.402599345Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

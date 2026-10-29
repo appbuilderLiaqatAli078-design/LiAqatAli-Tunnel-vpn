@@ -1,48 +1,40 @@
-# Custom Tunnel Pro — Glitch/Loop Audit Fixes, Zero-Drain Battery Optimization & Interactive Liquid Wave Plan
+# Custom Tunnel Pro — V2Ray (VLESS / VMess / Trojan / Shadowsocks) Connection & Anti-Brick Fix Plan
 
-## 1. Overview & Strict Safety Guarantees
-This update resolves the confirmed background loops, race conditions, and UI glitches found during the codebase audit, significantly boosts battery life (0 FPS idle UI rendering and throttled background notification IPC), and introduces an **interactive finger-swipe liquid wave effect inside the main Connect button and Status/Profile card** that automatically sleeps at **0 FPS** when your finger is lifted.
-- **No Removed Features**: All existing VPN engines (Xray-Core VLESS/VMess/Trojan/Shadowsocks, SSH, HevSocks5Tunnel), `.ctp` encryption/locks, profiles, logs, and settings remain 100% intact.
+## 1. Root Cause Summary (From User Engine Logs Screenshot)
+In the user's screenshot (`VLESS [net=ws, sec=tls]` on Cloudflare IP `141.193.213.10, 141.193.213.11` over `H+` mobile data), Xray Core started (`status: 0 - Started successfully, running`), but failed 7 seconds later with:
+`Outbound probe to http://cp.cloudflare.com/generate_204 failed: Get "http://cp.cloudflare.com/generate_204": io: read/write on closed pipe`
 
----
-
-## 2. Glitch, Loop & Race Condition Fixes
-
-### A. Always-On 60/120 FPS Animation Loop & Button Label Glitch (`VpnComponents.kt`)
-- **Problem**: `rememberInfiniteTransition` inside `ConnectButton` was initialized unconditionally at the top of the composable, causing Android to render animation frames at 60–120 FPS continuously even when the VPN was idle or already connected. Additionally, the button label displayed `"STOPPING"` for all `state.isBusy` states (including `Validating`, `StartingEngine`, and `Connecting`).
-- **Fix**:
-  - Move the pulse `rememberInfiniteTransition` strictly inside `if (state.isBusy)` so zero animation frames run when idle or connected.
-  - Fix the `ConnectButton` label so `VpnState.Stopping` shows `"STOPPING"`, while `Validating`, `StartingEngine`, `Connecting`, `TunnelEstablished`, and `Reconnecting` show `"CONNECTING..."`.
-
-### B. 1-Second System Notification IPC Wakeup Loop (`CustomTunnelVpnService.kt`)
-- **Problem**: `startStatsLoop()` called `NotificationManager.notify()` every 1 second (`1000ms`), waking up Android's `system_server` and SystemUI process continuously in the background and lacked `setOnlyAlertOnce(true)`.
-- **Fix**:
-  - Add `.setOnlyAlertOnce(true)` and `.setSilent(true)` to `NotificationCompat.Builder`.
-  - Keep in-app `StateFlow` traffic stats smooth while throttling system notification bar updates to every 5 seconds (and only when speeds or state actually change), drastically reducing background battery drain.
-
-### C. Async Engine Teardown Race Condition (`CustomTunnelVpnService.kt`)
-- **Problem**: `cleanup()` launched `serviceScope.launch { currentEngine?.stop(); currentEngine = null }` asynchronously, which could race with a fast reconnect and null out or stop the newly created `currentEngine`.
-- **Fix**:
-  - Capture `val engineToStop = currentEngine` and set `currentEngine = null` synchronously before launching the coroutine to stop `engineToStop`.
-  - Unregister `networkCallback` cleanly inside `onDestroy()` to prevent leaked `ConnectivityManager` callbacks.
-
-### D. SSH SOCKS5 Channel Memory Leak & Handshake Stream Ordering (`SshEngineAdapter.kt`)
-- **Problem**: `activeChannels` (`CopyOnWriteArrayList<ChannelDirectTCPIP>`) accumulated every TCP connection over a session without removing closed channels until disconnect, and bound `clientSocket` streams to JSch before writing the SOCKS5 success header (`0x05, 0x00...`).
-- **Fix**:
-  - Prune closed/disconnected channels (`activeChannels.removeAll { it.isClosed || !it.isConnected }`) whenever a new SOCKS5 channel is opened.
-  - Connect the remote `direct-tcpip` channel, send and flush the SOCKS5 success response first, and then attach the client input/output streams so remote server bytes never interleave with the SOCKS5 reply header.
+This occurred due to three interacting issues in `XrayEngineAdapter.kt`:
+1. **`routing.domainStrategy = "IPIfNonMatch"` + `sockopt.domainStrategy = "UseIP"` Circular/UDP DNS Failure**:
+   - `"IPIfNonMatch"` forced Xray to resolve `cp.cloudflare.com` locally via its internal `dns-in` module (UDP port 53 routed over the WebSocket proxy via XUDP) **before** sending the HTTP request.
+   - Cloudflare-fronted VLESS/VMess WebSocket servers (`141.193.213.10`) drop or close UDP/XUDP streams, and `"UseIP"` on `proxyOutbound` caused Xray's dialer to invoke `dns-in` (which itself routed through `proxy`), closing the internal pipe with `io: read/write on closed pipe`.
+2. **WebSocket Early Data (`?ed=2048` / `?ed=2560`) & Host Header Handling**:
+   - Many Cloudflare VLESS/VMess configs append `?ed=2048` or `?ed=2560` to the WebSocket path. Passing `?ed=2048` raw without extracting `maxEarlyData` / `earlyDataHeaderName` or sending duplicate `host` fields in `wsSettings` can cause certain Xray/v2fly and Cloudflare Worker endpoints to reset the WebSocket stream.
+3. **Hard-Failing the Connection on Startup Ping (`verifyTunnelConnectivity`)**:
+   - `verifyTunnelConnectivity()` threw an `IllegalStateException` and killed the entire VPN session whenever the startup ping (`measureDelay` / HTTP 204 probe) timed out or failed on slow `H+` mobile networks—even when the Xray engine and HEV tunnel were running and valid.
 
 ---
 
-## 3. Interactive Zero-Drain Liquid Wave UI (`VpnComponents.kt` & `HomeScreen.kt`)
-- **Touch & Swipe Reactive Physics**:
-  - Inside both the circular **Connect Button orb** and the **Active Profile / Status Card** on `HomeScreen`, add a custom `Canvas`-drawn dual-sine liquid wave layer (`InteractiveLiquidSurface`).
-  - **Finger Drag / Swipe Detection**: Swiping or dragging a finger across the Connect Button or Status Card injects wave velocity, tilt, and ripple amplitude proportional to finger movement (`pointerInput` drag/touch gesture without blocking normal taps/clicks).
-  - **Smart Zero-Drain Sleep (0 FPS when idle)**:
-    - A coroutine animation loop (`withFrameNanos`) runs **only** when triggered by a touch/swipe or connection state transition, smoothly damping wave energy back to rest over ~1.2 seconds and then **terminating the loop completely (0 FPS, 0% CPU/GPU usage)** until the next touch.
+## 2. Planned Changes
+
+### A. Switch Xray Routing & Outbound Domain Strategy to `"AsIs"` (`XrayEngineAdapter.kt`)
+- Set `routing.domainStrategy` to **`"AsIs"`** and `proxyOutbound.streamSettings.sockopt.domainStrategy` to **`"AsIs"`**.
+- Remove the circular `dns-in -> proxy` routing trap so Xray sends target hostnames directly inside the VLESS/VMess/Trojan TCP stream for the remote V2Ray server to resolve immediately (matching v2rayNG and HTTP Custom behavior).
+- Keep `socks-in` sniffing (`http`, `tls`, `quic`) with `routeOnly: true` so TLS SNI and HTTP Host headers are preserved intact without forcing local DNS resolution.
+
+### B. WebSocket Early Data (`?ed=`), TLS ALPN, and Multi-IP Fallback (`XrayEngineAdapter.kt` & `ConfigParser.kt`)
+- **WebSocket `?ed=` Parsing**: Automatically detect `?ed=N` (e.g., `?ed=2048` or `?ed=2560`) in WebSocket paths, strip `?ed=N` from the base HTTP path if needed or configure `maxEarlyData` and `earlyDataHeaderName = "Sec-WebSocket-Protocol"` properly in `wsSettings`, and set `headers: { "Host": effectiveWsHost }` cleanly.
+- **URL-Decoded Query Parameters (`ConfigParser.kt`)**: Ensure `path`, `sni`, `host`, and `serviceName` in `vless://`, `vmess://`, and `trojan://` URIs are properly URL-decoded (e.g. `%2F` -> `/`, `%3Fed%3D2048` -> `?ed=2048`) and trimmed of accidental whitespace.
+- **CDN / Cloudflare Server Address Handling**: If `profile.server` is a domain and `sni`/`wsHost` are blank, preserve the original domain for TLS `serverName` and WS `Host` even if pre-resolved IPs are logged.
+
+### C. Non-Bricking Connectivity Check + SOCKS5 Fallback Probe (`XrayEngineAdapter.kt` & `SshEngineAdapter.kt`)
+- **Start HEV Tunnel First & Keep VPN Alive**:
+  - Start the Xray loop and attach the HEV TUN-to-SOCKS5 forwarder (`127.0.0.1:10808`) immediately so the tunnel is live right away.
+  - Perform a lightweight non-blocking probe first via the local SOCKS5 port (`127.0.0.1:10808` HTTP `generate_204`) with fallback to `controller.measureDelay`.
+  - **Never Brick Valid Servers**: If the probe succeeds, log the RTT in ms (`Outbound tunnel verified (RTT: Xms)`). If the probe is slow, blocked by the ISP, or fails on `H+` mobile data while the Xray core loop is actively running, **log a warning (`[WARN] Startup ping check timed out or blocked by network — keeping tunnel connected`) and keep the VPN connected** instead of throwing an exception and disconnecting the user.
 
 ---
 
-## 4. Verification Plan
-1. Compile the project using `compile_applet` to ensure zero build or lint issues.
-2. Run unit tests (`gradle :app:testDebugUnitTest`) to verify all parser, branding, and regression tests pass.
+## 3. Verification Plan
+1. Update unit tests in `ExampleUnitTest.kt` to verify `"AsIs"` routing strategy, URL-decoded VLESS/VMess paths (`?ed=2048`), and non-bricking connection behavior.
+2. Run `compile_applet` and `gradle :app:testDebugUnitTest` to confirm zero build or test errors.

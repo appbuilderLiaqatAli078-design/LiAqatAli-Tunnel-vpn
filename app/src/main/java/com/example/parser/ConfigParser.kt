@@ -351,14 +351,21 @@ object ConfigParser {
         }
 
         val wsHost = (queryParams["host"] ?: "").trim()
-        val sni = (queryParams["sni"] ?: queryParams["peer"] ?: "").trim().ifEmpty { wsHost }
+        val sni = (queryParams["sni"] ?: queryParams["peer"] ?: "").trim().ifEmpty {
+            wsHost.ifEmpty { if (security == "tls" || security == "reality") rawHost else "" }
+        }
         val headerType = (queryParams["headerType"] ?: "none").trim().ifEmpty { "none" }
         val grpcMode = (queryParams["mode"] ?: "gun").trim().ifEmpty { "gun" }
         val grpcAuthority = (queryParams["authority"] ?: "").trim()
 
-        val path = when (network) {
+        val rawPath = when (network) {
             "grpc" -> (queryParams["serviceName"] ?: queryParams["path"] ?: "").trim()
             else -> (queryParams["path"] ?: queryParams["serviceName"] ?: "").trim()
+        }
+        val path = if (rawPath.contains("%2F", ignoreCase = true) || rawPath.contains("%3F", ignoreCase = true)) {
+            decodeUrlComponent(rawPath)
+        } else {
+            rawPath
         }
 
         val pbk = (queryParams["pbk"] ?: "").trim()

@@ -94,12 +94,10 @@ class XrayEngineAdapter : VpnEngineAdapter {
 
             vpnService.notifyTunnelEstablished(
                 profile.name,
-                "Xray transport established, verifying internet connectivity..."
+                "Starting TUN packet forwarder..."
             )
-            AppLogger.i(TAG, "Verifying real outbound connectivity through ${profile.protocol.displayName} server...")
-            verifyTunnelConnectivity(controller, profile)
 
-            AppLogger.i(TAG, "Xray outbound verified. Starting HEV TUN-to-SOCKS5 forwarder on 127.0.0.1:$localSocksPort (udp=udp)")
+            AppLogger.i(TAG, "Starting HEV TUN-to-SOCKS5 forwarder on 127.0.0.1:$localSocksPort (udp=udp)")
             val hevOk = HevTunnelManager.start(
                 context = vpnService,
                 tunFd = tunFd,
@@ -115,7 +113,15 @@ class XrayEngineAdapter : VpnEngineAdapter {
             }
 
             isEngineRunning = true
-            AppLogger.i(TAG, "Xray Engine and HEV forwarder active and routing verified traffic")
+
+            vpnService.notifyTunnelEstablished(
+                profile.name,
+                "Xray transport established, checking route responsiveness..."
+            )
+            AppLogger.i(TAG, "Checking outbound responsiveness through ${profile.protocol.displayName} server...")
+            verifyTunnelConnectivity(controller, profile)
+
+            AppLogger.i(TAG, "Xray Engine and HEV forwarder active and routing traffic")
             true
         } catch (e: Throwable) {
             val cleanMsg = AppLogger.redact(e.message ?: "Unknown Xray error")
@@ -131,6 +137,17 @@ class XrayEngineAdapter : VpnEngineAdapter {
             "http://connectivitycheck.gstatic.com/generate_204",
             "https://cp.cloudflare.com/generate_204"
         )
+
+        // 1. Try a fast probe through the local SOCKS5 inbound (exercises the exact AsIs routing path)
+        for (url in probeUrls.take(2)) {
+            val rtt = probeViaLocalSocks(url, timeoutMs = 4500)
+            if (rtt > 0) {
+                AppLogger.i(TAG, "Outbound tunnel verified via SOCKS5 $url (RTT: ${rtt}ms)")
+                return
+            }
+        }
+
+        // 2. Fallback to Xray controller measureDelay
         var lastError: String? = null
         for (url in probeUrls) {
             try {
@@ -142,12 +159,42 @@ class XrayEngineAdapter : VpnEngineAdapter {
             } catch (e: Throwable) {
                 val msg = AppLogger.redact(e.message ?: e.javaClass.simpleName)
                 lastError = msg
-                AppLogger.w(TAG, "Outbound probe to $url failed: $msg")
+                AppLogger.d(TAG, "Outbound probe note for $url: $msg")
             }
         }
 
-        val diagnostic = summarizeXrayError(lastError, profile)
-        throw IllegalStateException(diagnostic)
+        // Do NOT kill a running tunnel if ping is slow or blocked by the carrier/server
+        val note = summarizeXrayError(lastError, profile)
+        AppLogger.w(
+            TAG,
+            "Ping check slow or blocked ($note) — keeping ${profile.protocol.displayName} tunnel connected"
+        )
+    }
+
+    private fun probeViaLocalSocks(urlStr: String, timeoutMs: Int): Long {
+        return try {
+            val startNs = System.nanoTime()
+            val proxy = java.net.Proxy(
+                java.net.Proxy.Type.SOCKS,
+                java.net.InetSocketAddress("127.0.0.1", localSocksPort)
+            )
+            val conn = (java.net.URL(urlStr).openConnection(proxy) as java.net.HttpURLConnection).apply {
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+                instanceFollowRedirects = false
+                requestMethod = "GET"
+                setRequestProperty("Connection", "close")
+            }
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code in 200..399) {
+                ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+            } else {
+                -1L
+            }
+        } catch (_: Throwable) {
+            -1L
+        }
     }
 
     private fun summarizeXrayError(rawError: String?, profile: VpnProfile): String {
@@ -565,7 +612,7 @@ class XrayEngineAdapter : VpnEngineAdapter {
                 }
 
                 put("sockopt", JSONObject().apply {
-                    put("domainStrategy", if (resolvedServerIps.isNotEmpty()) "UseIP" else "AsIs")
+                    put("domainStrategy", "AsIs")
                 })
             }
             put("streamSettings", streamSettings)
@@ -586,6 +633,9 @@ class XrayEngineAdapter : VpnEngineAdapter {
         val dnsOutbound = JSONObject().apply {
             put("tag", "dns-out")
             put("protocol", "dns")
+            put("settings", JSONObject().apply {
+                put("network", "tcp")
+            })
         }
         outbounds.put(dnsOutbound)
 
@@ -617,21 +667,23 @@ class XrayEngineAdapter : VpnEngineAdapter {
             }
             put("hosts", hosts)
 
-            val servers = JSONArray().put(profile.dnsPrimary.ifBlank { "1.1.1.1" })
+            val primaryDns = profile.dnsPrimary.trim().ifBlank { "1.1.1.1" }
+            val primaryTcp = if (primaryDns.contains("://")) primaryDns else "tcp://$primaryDns"
+            val servers = JSONArray().put(primaryTcp)
             if (profile.dnsSecondary.isNotBlank()) {
-                servers.put(profile.dnsSecondary)
+                val secondaryDns = profile.dnsSecondary.trim()
+                val secondaryTcp = if (secondaryDns.contains("://")) secondaryDns else "tcp://$secondaryDns"
+                servers.put(secondaryTcp)
             }
             put("servers", servers)
         }
         root.put("dns", dns)
 
         // Routing configuration:
-        // 1. Intercept port-53 DNS traffic from socks-in into dns-out
-        // 2. Route Xray's internal DNS queries (dns-in) through the VLESS/proxy outbound
-        // 3. Bypass private LAN IPs via direct
-        // 4. Route all remaining TCP & UDP traffic through proxy
+        // Use "AsIs" so domain names are sent directly to the remote V2Ray server to resolve,
+        // avoiding circular or blocked UDP DNS lookups over WebSocket tunnels.
         val routing = JSONObject().apply {
-            put("domainStrategy", "IPIfNonMatch")
+            put("domainStrategy", "AsIs")
             val rules = JSONArray()
 
             rules.put(JSONObject().apply {
