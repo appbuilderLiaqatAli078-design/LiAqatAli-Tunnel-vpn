@@ -58,13 +58,19 @@ class CustomTunnelVpnService : VpnService() {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
 
+    @Volatile
+    private var underlyingNetworkChanged = false
+
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onLost(network: Network) {
-            AppLogger.w(TAG, "Underlying network lost")
+            AppLogger.w(TAG, "Underlying physical network lost")
         }
 
         override fun onAvailable(network: Network) {
-            AppLogger.i(TAG, "Underlying network available")
+            AppLogger.i(TAG, "Underlying physical network available")
+            if (_vpnState.value.isConnected) {
+                underlyingNetworkChanged = true
+            }
         }
     }
 
@@ -312,9 +318,14 @@ class CustomTunnelVpnService : VpnService() {
 
     private fun startStatsMonitor(generation: Long) {
         statsJob?.cancel()
+        underlyingNetworkChanged = false
         statsJob = serviceScope.launch {
             var backgroundRechecks = 0
             var ticksSinceLastRecheck = 0
+            var prevBytesIn = 0L
+            var prevBytesOut = 0L
+            var stalledTxTicks = 0
+
             while (isActive && generation == connectionGeneration.get() && _vpnState.value is VpnState.Connected) {
                 delay(1500)
                 if (generation != connectionGeneration.get()) break
@@ -323,7 +334,45 @@ class CustomTunnelVpnService : VpnService() {
                     _trafficStats.value = stats
                 }
 
+                // Track passive one-way traffic stalls (apps actively transmitting bytesOut while bytesIn is frozen at 0)
+                if (stats.bytesIn > prevBytesIn) {
+                    stalledTxTicks = 0
+                } else if (stats.bytesOut > prevBytesOut + 512L) {
+                    stalledTxTicks++
+                }
+                prevBytesIn = stats.bytesIn
+                prevBytesOut = stats.bytesOut
+
                 val currentConnected = _vpnState.value as? VpnState.Connected ?: break
+
+                // Non-disruptive self-healing: ONLY runs if physical network switched or >=12s of continuous outbound-only stall
+                if (underlyingNetworkChanged || stalledTxTicks >= 8) {
+                    val reason = if (underlyingNetworkChanged) "physical network transition" else "outbound traffic stall"
+                    underlyingNetworkChanged = false
+                    stalledTxTicks = 0
+                    val engine = currentEngine
+                    if (engine != null && generation == connectionGeneration.get()) {
+                        AppLogger.i(TAG, "Detected $reason; triggering non-disruptive tunnel recovery...")
+                        val recovered = engine.recoverIfStalled()
+                        val latestCheck = engine.getLastConnectivityResult()
+                        if (recovered && latestCheck != null && latestCheck.verified && generation == connectionGeneration.get()) {
+                            val latestState = _vpnState.value as? VpnState.Connected
+                            if (latestState != null && !latestState.isInternetVerified) {
+                                _vpnState.value = latestState.copy(
+                                    isInternetVerified = true,
+                                    verificationDetail = latestCheck.diagnosticMessage,
+                                    rttMs = latestCheck.rttMs
+                                )
+                                updateNotification(
+                                    "Connected • Internet Verified (${latestState.profileName})",
+                                    true
+                                )
+                            }
+                        }
+                    }
+                    continue
+                }
+
                 if (!currentConnected.isInternetVerified && backgroundRechecks < 3) {
                     ticksSinceLastRecheck++
                     if (stats.bytesIn > 0L || ticksSinceLastRecheck >= 5) {
@@ -423,6 +472,7 @@ class CustomTunnelVpnService : VpnService() {
         try {
             val request = NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                 .build()
             connectivityManager.registerNetworkCallback(request, networkCallback)
         } catch (e: Exception) {

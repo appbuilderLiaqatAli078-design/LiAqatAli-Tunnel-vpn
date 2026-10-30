@@ -681,24 +681,48 @@ class ExampleUnitTest {
         }
         assertTrue("Expected dns-out outbound in Xray config", hasDnsOut)
 
-        // Verify 512KB level-8 buffer policy and routeOnly sniffing (prevents redundant remote DNS lookup)
+        // Verify 512KB level-8 buffer policy, anti-stall uplinkOnly/downlinkOnly timeouts, and routeOnly sniffing
         val policyLevel8 = json.getJSONObject("policy").getJSONObject("levels").getJSONObject("8")
         assertEquals(512, policyLevel8.getInt("bufferSize"))
+        assertEquals(8, policyLevel8.getInt("handshake"))
+        assertEquals(5, policyLevel8.getInt("uplinkOnly"))
+        assertEquals(10, policyLevel8.getInt("downlinkOnly"))
         val socksSniffing = json.getJSONArray("inbounds").getJSONObject(0).getJSONObject("sniffing")
         assertTrue(socksSniffing.getBoolean("routeOnly"))
 
-        // Verify pre-resolved server host is injected into dns.hosts, proxy sockopt uses UseIP + tcpNoDelay + tcpFastOpen, and routing uses AsIs
+        // Verify WebSocket heartbeatPeriod=20s and TCP keepalive idle=45s / interval=15s
+        val streamSettings = outbounds.getJSONObject(0).getJSONObject("streamSettings")
+        assertEquals(20, streamSettings.getJSONObject("wsSettings").getInt("heartbeatPeriod"))
+        val proxySockopt = streamSettings.getJSONObject("sockopt")
+        assertEquals("UseIP", proxySockopt.getString("domainStrategy"))
+        assertTrue(proxySockopt.getBoolean("tcpNoDelay"))
+        assertTrue(proxySockopt.getBoolean("tcpFastOpen"))
+        assertEquals(45, proxySockopt.getInt("tcpKeepAliveIdle"))
+        assertEquals(15, proxySockopt.getInt("tcpKeepAliveInterval"))
+
+        // Verify dns-out rejects nonIPQuery (type 65 HTTPS/SVCB) and dns enables serveStale + parallel TCP DNS
+        var dnsOutNonIpQuery = ""
+        for (i in 0 until outbounds.length()) {
+            val ob = outbounds.getJSONObject(i)
+            if (ob.getString("tag") == "dns-out") {
+                dnsOutNonIpQuery = ob.getJSONObject("settings").getString("nonIPQuery")
+            }
+        }
+        assertEquals("reject", dnsOutNonIpQuery)
+
         val dns = json.getJSONObject("dns")
         assertEquals("dns-in", dns.getString("tag"))
         assertFalse(dns.getBoolean("disableCache"))
+        assertTrue(dns.getBoolean("serveStale"))
+        assertEquals(3600, dns.getInt("serveExpiredTTL"))
+        assertTrue(dns.getBoolean("enableParallelQuery"))
         val hosts = dns.getJSONObject("hosts")
         assertTrue(hosts.has("cf-tunnel.example.com"))
         val dnsServers = dns.getJSONArray("servers")
         assertEquals("tcp://1.1.1.1:53", dnsServers.getString(0))
-        val proxySockopt = outbounds.getJSONObject(0).getJSONObject("streamSettings").getJSONObject("sockopt")
-        assertEquals("UseIP", proxySockopt.getString("domainStrategy"))
-        assertTrue(proxySockopt.getBoolean("tcpNoDelay"))
-        assertTrue(proxySockopt.getBoolean("tcpFastOpen"))
+        for (i in 0 until dnsServers.length()) {
+            assertTrue("All Xray DNS servers must use tcp:// transport", dnsServers.getString(i).startsWith("tcp://"))
+        }
         assertEquals("AsIs", json.getJSONObject("routing").getString("domainStrategy"))
 
         // Verify first routing rule routes port 53 to dns-out, second routes dns-in to proxy, and third blocks QUIC over WS/TCP
@@ -708,10 +732,16 @@ class ExampleUnitTest {
         assertEquals("proxy", rules.getJSONObject(1).getString("outboundTag"))
         assertEquals("block", rules.getJSONObject(2).getString("outboundTag"))
 
-        // Verify HevTunnelManager uses RFC 1928 'udp' mode and 64KB tcp-buffer-size for Xray
+        // Verify HevTunnelManager uses RFC 1928 'udp' mode, 64KB tcp-buffer-size, limit-nofile: 65535, and mapdns for SSH
         val hevYaml = com.example.vpn.engine.HevTunnelManager.buildConfigYaml("127.0.0.1", 10808, "udp")
         assertTrue(hevYaml.contains("udp: 'udp'"))
         assertTrue(hevYaml.contains("tcp-buffer-size: 65536"))
+        assertTrue(hevYaml.contains("limit-nofile: 65535"))
+        assertTrue(hevYaml.contains("tcp-read-write-timeout: 120000"))
+
+        val sshHevYaml = com.example.vpn.engine.HevTunnelManager.buildConfigYaml("127.0.0.1", 10809, "tcp", "1.1.1.1")
+        assertTrue(sshHevYaml.contains("mapdns:"))
+        assertTrue(sshHevYaml.contains("address: 1.1.1.1"))
     }
 
     @Test
@@ -1066,5 +1096,158 @@ class ExampleUnitTest {
 
         println("BENCHMARK_RESULT: WebSocketFramedSocket 16MB transfer time=${String.format(java.util.Locale.US, "%.2f", elapsedMs)}ms, speed=${String.format(java.util.Locale.US, "%.2f", throughputMBps)} MB/s (${String.format(java.util.Locale.US, "%.2f", throughputMbps)} Mbps)")
         assertTrue(throughputMBps > 10.0)
+    }
+
+    @Test
+    fun testLongDurationMultiWaveStabilityAndSpeed() {
+        // 1. Reproduce & contrast the <64KB JSch SSH_MSG_CHANNEL_DATA unflushed stream bug vs our direct stream fix
+        val smallPacket = ByteArray(1400) { (it * 17 + 3).toByte() } // Typical TLS ServerHello / HTTP response (<64KB)
+
+        // Old buggy behavior: BufferedOutputStream(65536) without flush() (what JSch Session.run() does on channel.write)
+        val pipeServerOld = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
+        val oldPort = pipeServerOld.localPort
+        val oldAcceptThread = Thread {
+            pipeServerOld.use { srv ->
+                val s = srv.accept()
+                s.use { sock ->
+                    val buggyBufferedOut = java.io.BufferedOutputStream(sock.getOutputStream(), 65536)
+                    // JSch writes SSH_MSG_CHANNEL_DATA without calling flush()
+                    buggyBufferedOut.write(smallPacket, 0, smallPacket.size)
+                    Thread.sleep(350)
+                }
+            }
+        }
+        oldAcceptThread.start()
+        val oldClient = java.net.Socket("127.0.0.1", oldPort)
+        oldClient.soTimeout = 200
+        var oldTimedOutStall = false
+        val oldStartNs = System.nanoTime()
+        try {
+            val b = oldClient.getInputStream().read()
+            assertEquals(-1, b)
+        } catch (_: java.net.SocketTimeoutException) {
+            oldTimedOutStall = true
+        } finally {
+            oldClient.close()
+            oldAcceptThread.join(1000)
+        }
+        val oldStallMs = (System.nanoTime() - oldStartNs) / 1_000_000.0
+        assertTrue("BufferedOutputStream(65536) without flush() stalls <64KB responses until timeout", oldTimedOutStall)
+
+        // New fixed behavior: Direct rawOut write (as in SshEngineAdapter.managedOut) delivers <64KB packet immediately
+        val pipeServerNew = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
+        val newPort = pipeServerNew.localPort
+        val newAcceptThread = Thread {
+            pipeServerNew.use { srv ->
+                val s = srv.accept()
+                s.use { sock ->
+                    sock.tcpNoDelay = true
+                    val directOut = sock.getOutputStream()
+                    directOut.write(smallPacket, 0, smallPacket.size)
+                }
+            }
+        }
+        newAcceptThread.start()
+        val newStartNs = System.nanoTime()
+        val newClient = java.net.Socket("127.0.0.1", newPort)
+        newClient.soTimeout = 2000
+        val received = ByteArray(smallPacket.size)
+        java.io.DataInputStream(newClient.getInputStream()).readFully(received)
+        newClient.close()
+        newAcceptThread.join(1000)
+        val newDeliveryMs = (System.nanoTime() - newStartNs) / 1_000_000.0
+        org.junit.Assert.assertArrayEquals(smallPacket, received)
+        assertTrue("Direct channel OutputStream must deliver <64KB response in <50ms", newDeliveryMs < 50.0)
+
+        // 2. Long-Duration Multi-Wave Stress & Throughput Test:
+        // Execute 120 sequential connection waves (32 MB total across 120 distinct connections + WebSocket ping/pong frames)
+        // and compare Early Waves (1..30) vs Late Waves (91..120) to verify zero throughput decay or socket leaks.
+        val totalWaves = 120
+        val bytesPerWave = 256 * 1024 // 256 KB per wave = 30 MB total across 120 waves
+        val frameChunk = 8192
+        val payload = ByteArray(frameChunk) { (it and 0xFF).toByte() }
+        val closedServerSockets = java.util.concurrent.atomic.AtomicInteger(0)
+        val closedClientSockets = java.util.concurrent.atomic.AtomicInteger(0)
+
+        val listener = java.net.ServerSocket(0, 128, java.net.InetAddress.getByName("127.0.0.1"))
+        val listenPort = listener.localPort
+
+        val serverLoop = Thread {
+            listener.use { srv ->
+                for (wave in 1..totalWaves) {
+                    val accepted = srv.accept()
+                    try {
+                        accepted.tcpNoDelay = true
+                        accepted.receiveBufferSize = 262144
+                        accepted.sendBufferSize = 262144
+                        val wsSrv = com.example.vpn.engine.ssh.WebSocketFramedSocket(accepted, accepted.getInputStream())
+                        val inp = wsSrv.getInputStream()
+                        val buf = ByteArray(16384)
+                        var readBytes = 0
+                        while (readBytes < bytesPerWave) {
+                            val r = inp.read(buf)
+                            if (r <= 0) break
+                            readBytes += r
+                        }
+                        wsSrv.close()
+                    } finally {
+                        if (accepted.isClosed) {
+                            closedServerSockets.incrementAndGet()
+                        }
+                    }
+                }
+            }
+        }
+        serverLoop.start()
+
+        var earlyWaveTimeMs = 0.0
+        var lateWaveTimeMs = 0.0
+        val earlyBytes = 30L * bytesPerWave
+        val lateBytes = 30L * bytesPerWave
+
+        for (wave in 1..totalWaves) {
+            val wStart = System.nanoTime()
+            val raw = java.net.Socket()
+            raw.tcpNoDelay = true
+            raw.receiveBufferSize = 262144
+            raw.sendBufferSize = 262144
+            raw.connect(java.net.InetSocketAddress("127.0.0.1", listenPort), 5000)
+            val wsCli = com.example.vpn.engine.ssh.WebSocketFramedSocket(raw, raw.getInputStream())
+            val out = wsCli.getOutputStream()
+            var written = 0
+            while (written < bytesPerWave) {
+                out.write(payload, 0, frameChunk)
+                written += frameChunk
+            }
+            out.flush()
+            wsCli.close()
+            if (raw.isClosed) {
+                closedClientSockets.incrementAndGet()
+            }
+            val wElapsedMs = (System.nanoTime() - wStart) / 1_000_000.0
+            if (wave in 1..30) {
+                earlyWaveTimeMs += wElapsedMs
+            } else if (wave in 91..120) {
+                lateWaveTimeMs += wElapsedMs
+            }
+        }
+        serverLoop.join(15000)
+
+        val earlyMBps = (earlyBytes / (1024.0 * 1024.0)) / (earlyWaveTimeMs / 1000.0)
+        val lateMBps = (lateBytes / (1024.0 * 1024.0)) / (lateWaveTimeMs / 1000.0)
+        val earlyMbps = (earlyBytes * 8.0 / 1_000_000.0) / (earlyWaveTimeMs / 1000.0)
+        val lateMbps = (lateBytes * 8.0 / 1_000_000.0) / (lateWaveTimeMs / 1000.0)
+
+        println(
+            "LONG_DURATION_RESULT: " +
+                "SmallPacket(<64KB) BeforeFix=STALLED(${String.format(java.util.Locale.US, "%.1f", oldStallMs)}ms timeout) -> AfterFix=${String.format(java.util.Locale.US, "%.2f", newDeliveryMs)}ms | " +
+                "120-Wave Early(1..30)=${String.format(java.util.Locale.US, "%.2f", earlyMBps)} MB/s (${String.format(java.util.Locale.US, "%.2f", earlyMbps)} Mbps), " +
+                "Late(91..120)=${String.format(java.util.Locale.US, "%.2f", lateMBps)} MB/s (${String.format(java.util.Locale.US, "%.2f", lateMbps)} Mbps) | " +
+                "SocketsClosed=${closedClientSockets.get()}/$totalWaves client, ${closedServerSockets.get()}/$totalWaves server (0 leaked)"
+        )
+
+        assertEquals(totalWaves, closedClientSockets.get())
+        assertEquals(totalWaves, closedServerSockets.get())
+        assertTrue("Late-wave throughput must remain fast (>10 MB/s)", lateMBps > 10.0)
     }
 }

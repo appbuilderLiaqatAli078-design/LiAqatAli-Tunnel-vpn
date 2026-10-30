@@ -31,5 +31,6 @@ interface VpnEngineAdapter {
     fun isRunning(): Boolean
     fun getLastConnectivityResult(): ConnectivityCheckResult? = null
     suspend fun recheckConnectivity(): ConnectivityCheckResult? = null
+    suspend fun recoverIfStalled(): Boolean = false
 }
 

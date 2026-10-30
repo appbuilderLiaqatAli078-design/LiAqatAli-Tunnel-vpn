@@ -16,9 +16,22 @@ object HevTunnelManager {
     fun buildConfigYaml(
         socksAddress: String = "127.0.0.1",
         socksPort: Int = 10808,
-        udpMode: String = "udp"
+        udpMode: String = "udp",
+        mapDnsAddress: String = ""
     ): String {
         val normalizedUdp = if (udpMode == "udp" || udpMode == "tcp") udpMode else "udp"
+        val mapDnsSection = if (mapDnsAddress.isNotBlank()) {
+            """
+            mapdns:
+              address: ${mapDnsAddress.trim()}
+              port: 53
+              network: 240.0.0.0
+              netmask: 240.0.0.0
+              cache-size: 10000
+            """.trimIndent() + "\n"
+        } else {
+            ""
+        }
         return """
             tunnel:
               name: tun0
@@ -29,12 +42,16 @@ object HevTunnelManager {
               port: $socksPort
               address: '$socksAddress'
               udp: '$normalizedUdp'
+        """.trimIndent() + "\n" + mapDnsSection + """
             misc:
               task-stack-size: 81920
               tcp-buffer-size: 65536
-              connect-timeout: 10000
-              tcp-read-write-timeout: 300000
-              udp-read-write-timeout: 60000
+              udp-recv-buffer-size: 524288
+              udp-copy-buffer-nums: 16
+              connect-timeout: 8000
+              tcp-read-write-timeout: 120000
+              udp-read-write-timeout: 30000
+              limit-nofile: 65535
               log-level: warn
         """.trimIndent()
     }
@@ -44,11 +61,15 @@ object HevTunnelManager {
         tunFd: Int,
         socksAddress: String = "127.0.0.1",
         socksPort: Int = 10808,
-        udpMode: String = "tcp"
+        udpMode: String = "tcp",
+        mapDnsAddress: String = ""
     ): Boolean {
         return try {
+            lastRxBytes = 0L
+            lastTxBytes = 0L
+            lastTimestamp = 0L
             val configFile = File(context.cacheDir, "hev_socks5.yml")
-            val yamlConfig = buildConfigYaml(socksAddress, socksPort, udpMode)
+            val yamlConfig = buildConfigYaml(socksAddress, socksPort, udpMode, mapDnsAddress)
 
             FileOutputStream(configFile).use { it.write(yamlConfig.toByteArray()) }
 
@@ -80,6 +101,9 @@ object HevTunnelManager {
                 AppLogger.i(TAG, "Stopping HEV SOCKS5 Tunnel forwarder")
                 TProxyService.TProxyStopService()
             }
+            lastRxBytes = 0L
+            lastTxBytes = 0L
+            lastTimestamp = 0L
         } catch (e: Throwable) {
             AppLogger.e(TAG, "Exception stopping HEV SOCKS5 Tunnel", e)
         }

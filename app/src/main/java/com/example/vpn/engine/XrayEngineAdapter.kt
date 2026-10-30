@@ -172,6 +172,24 @@ class XrayEngineAdapter : VpnEngineAdapter {
         result
     }
 
+    override suspend fun recoverIfStalled(): Boolean = withContext(Dispatchers.IO) {
+        val controller = coreController ?: return@withContext false
+        val profile = activeProfile ?: return@withContext false
+        if (!isEngineRunning || !controller.isRunning) return@withContext false
+        try {
+            AppLogger.i(TAG, "Performing non-disruptive Xray outbound recovery check...")
+            try {
+                Libv2ray.reconcileBrowserDialer("")
+            } catch (_: Throwable) {}
+            val result = verifyTunnelConnectivity(controller, profile)
+            lastConnectivityResult = result
+            result.verified
+        } catch (e: Throwable) {
+            AppLogger.w(TAG, "Non-disruptive Xray recovery check warning: ${e.message}")
+            false
+        }
+    }
+
     private fun waitForLocalSocksListener(host: String, port: Int, timeoutMs: Int): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -419,14 +437,15 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
         root.put("log", log)
 
-        // High-throughput level 8 buffer policy (512 KB per connection pipe buffer)
+        // High-throughput level 8 buffer & timeout policy:
+        // uplinkOnly=5s and downlinkOnly=10s prevent premature 'closed pipe' kills on half-closed HTTP/DNS streams
         val policy = JSONObject().apply {
             put("levels", JSONObject().apply {
                 put("8", JSONObject().apply {
-                    put("handshake", 4)
+                    put("handshake", 8)
                     put("connIdle", 300)
-                    put("uplinkOnly", 1)
-                    put("downlinkOnly", 1)
+                    put("uplinkOnly", 5)
+                    put("downlinkOnly", 10)
                     put("bufferSize", 512)
                 })
             })
@@ -640,6 +659,9 @@ class XrayEngineAdapter : VpnEngineAdapter {
                                     put("Host", effectiveWsHost)
                                 })
                             }
+                            // Send periodic RFC 6455 WebSocket Ping frames every 20s to prevent
+                            // Cloudflare CDN / carrier NAT idle connection drops and detect dead sockets
+                            put("heartbeatPeriod", 20)
                         })
                     }
                     "grpc" -> {
@@ -711,7 +733,8 @@ class XrayEngineAdapter : VpnEngineAdapter {
                     put("domainStrategy", if (resolvedServerIps.isNotEmpty()) "UseIP" else "AsIs")
                     put("tcpFastOpen", true)
                     put("tcpNoDelay", true)
-                    put("tcpKeepAliveInterval", 30)
+                    put("tcpKeepAliveIdle", 45)
+                    put("tcpKeepAliveInterval", 15)
                 })
             }
             put("streamSettings", streamSettings)
@@ -728,12 +751,13 @@ class XrayEngineAdapter : VpnEngineAdapter {
         }
         outbounds.put(directOutbound)
 
-        // DNS outbound: intercepts port-53 queries from TUN and uses Xray's internal caching DNS module
+        // DNS outbound: intercepts port-53 queries from TUN and uses Xray's internal caching DNS module.
+        // nonIPQuery="reject" immediately answers type-65 HTTPS/SVCB queries locally without dialing UDP over the tunnel.
         val dnsOutbound = JSONObject().apply {
             put("tag", "dns-out")
             put("protocol", "dns")
             put("settings", JSONObject().apply {
-                put("nonIPQuery", "skip")
+                put("nonIPQuery", "reject")
             })
         }
         outbounds.put(dnsOutbound)
@@ -747,10 +771,14 @@ class XrayEngineAdapter : VpnEngineAdapter {
 
         root.put("outbounds", outbounds)
 
-        // DNS configuration with pre-resolved server host and in-memory cache enabled
+        // DNS configuration with pre-resolved server host, in-memory cache, stale serving (0ms after TTL expiry), and TCP transport
         val dns = JSONObject().apply {
             put("tag", "dns-in")
             put("disableCache", false)
+            put("serveStale", true)
+            put("serveExpiredTTL", 3600)
+            put("enableParallelQuery", true)
+            put("queryStrategy", if (profile.blockIpv6) "UseIPv4" else "UseIP")
             val hosts = JSONObject().apply {
                 put("dns.google", "8.8.8.8")
                 put("cloudflare-dns.com", "1.1.1.1")
@@ -770,13 +798,13 @@ class XrayEngineAdapter : VpnEngineAdapter {
             put("hosts", hosts)
 
             val primaryDns = profile.dnsPrimary.trim().ifBlank { "1.1.1.1" }
-            val primaryTcp = formatTcpDnsServer(primaryDns)
-            val servers = JSONArray().put(primaryTcp)
-            if (profile.dnsSecondary.isNotBlank()) {
-                val secondaryDns = profile.dnsSecondary.trim()
-                servers.put(formatTcpDnsServer(secondaryDns))
+            val secondaryDns = profile.dnsSecondary.trim().ifBlank { "8.8.8.8" }
+            val servers = JSONArray().apply {
+                put(formatTcpDnsServer(primaryDns))
+                if (secondaryDns != primaryDns) {
+                    put(formatTcpDnsServer(secondaryDns))
+                }
             }
-            servers.put(primaryDns)
             put("servers", servers)
         }
         root.put("dns", dns)
